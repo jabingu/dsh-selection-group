@@ -121,6 +121,7 @@ that symbol name.
   follows the box and the card, the grace window is a one-shot timer, and a 1 s
   interval only self-heals and samples. Measured completely idle: ~18 DOM queries a
   second (down from ~110) and **~8 a second with zero writes once they expire**, which is the default. Raise `TICK_MS`/`SAMPLE_MS` to go lower still.
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md).
 - **When the box appears**: **it stays away while the pointer is down** — every drag
   frame fires `selectionchange` and the frame that crosses a message boundary closes
   the box upstream, which made it flicker — and **appears in the turn the pointer is

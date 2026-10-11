@@ -3729,7 +3729,7 @@ var module = { exports: {} };
 		 */
 
 		//#region constants
-		const CLIENT_VERSION = "1.3.5";
+		const CLIENT_VERSION = "1.3.6";
 		const STYLE_ID = "dsh-selection-group-style";
 		const MARKER_ATTR = "data-dsh-selection-group";
 		const HIDE_ATTR = "data-dsh-selection-group-bar";
@@ -3748,6 +3748,23 @@ var module = { exports: {} };
 		/** Where that state actually lives: one record per page, not per hot-swapped copy. */
 		const DRAGGING_STATE_KEY = "__DSH_SELECTION_GROUP_DRAGGING_STATE__";
 		const DIAGNOSTICS_KEY = "__DSH_SELECTION_GROUP__";
+		/** Set BEFORE the plugin loads: false disables the diagnostics, true keeps them on. */
+		const DIAGNOSTICS_POLICY_KEY = "__DSH_SELECTION_GROUP_DIAGNOSTICS__";
+		/** Optional number of milliseconds to keep them on before they expire by themselves. */
+		const DIAGNOSTICS_TTL_KEY = "__DSH_SELECTION_GROUP_DIAGNOSTICS_TTL_MS__";
+		/** Where the one deadline per page lives, so a hot swap cannot restart the clock. */
+		const DIAGNOSTICS_DEADLINE_KEY = "__DSH_SELECTION_GROUP_DIAGNOSTICS_DEADLINE__";
+		const DIAGNOSTICS_TIMER_KEY = "__DSH_SELECTION_GROUP_DIAGNOSTICS_TIMER__";
+		/**
+		 * How long the diagnostics run before they turn themselves off.
+		 *
+		 * They wrap console.warn/error, listen for window errors and sample the DOM once a
+		 * second — fine for debugging a fresh install, wrong to leave on someone else's page
+		 * forever. Three minutes covers a startup problem (where these have always paid off);
+		 * after that only cheap, event-driven fields keep updating, and a final snapshot is
+		 * written so the record of what happened survives.
+		 */
+		const DIAGNOSTICS_TTL_MS = 3 * 60 * 1000;
 		const DIAGNOSTICS_STORAGE_KEY = "dsh-selection-group.diagnostics";
 		/**
 		 * The toolbar is event-driven: `selectionchange` paints the marker in its own
@@ -3778,6 +3795,9 @@ var module = { exports: {} };
 		let lastSampleAt = 0;
 		/** One-shot re-evaluation after a selection, so the marker is not polled for. */
 		let graceTimer = null;
+		/** "off" | "expiring" | "expired" | "on" — what the diagnostics are allowed to do. */
+		let diagnosticsMode = "expiring";
+		let diagnosticsFinalWriteDone = false;
 		//#endregion
 
 		//#region diagnostics
@@ -3796,6 +3816,8 @@ var module = { exports: {} };
 			quoteButtonHidden: false,
 			stylePresent: null,
 			hookPresent: null,
+			diagnosticsMode: null,
+			diagnosticsExpiredAt: null,
 			lastError: null,
 			lastWindowError: null,
 			selection: null,
@@ -3869,12 +3891,18 @@ var module = { exports: {} };
 		}
 
 		function persistDiagnostics() {
+			if (diagnosticsMode === "off")
+				return;
+			if (diagnosticsMode === "expired" && diagnosticsFinalWriteDone)
+				return;
 			if (persistTimer !== null)
 				return;
 			try {
 				persistTimer = setTimeout(() => {
 					persistTimer = null;
 					try {
+						if (diagnosticsMode === "expired")
+							diagnosticsFinalWriteDone = true;
 						// A retired layer must never win the last-writer race: after a hot swap
 						// its snapshot would otherwise overwrite the live one.
 						if (globalThis[DIAGNOSTICS_KEY] !== diagnostics)
@@ -3901,6 +3929,82 @@ var module = { exports: {} };
 				persistDiagnostics();
 			}
 			catch (_) { /* diagnostics must never break the bundle */ }
+		}
+
+		/** Resolve what the diagnostics may do, from the two window switches. */
+		function diagnosticsPolicy() {
+			let flag;
+			try {
+				flag = window[DIAGNOSTICS_POLICY_KEY];
+			}
+			catch (_) {
+				flag = undefined;
+			}
+			if (flag === false)
+				return { mode: "off", ttl: 0 };
+			if (flag === true)
+				return { mode: "on", ttl: 0 };
+			let ttl = DIAGNOSTICS_TTL_MS;
+			try {
+				const requested = Number(window[DIAGNOSTICS_TTL_KEY]);
+				if (Number.isFinite(requested) && requested >= 0)
+					ttl = requested;
+			}
+			catch (_) { /* keep the default window */ }
+			return { mode: "expiring", ttl };
+		}
+
+		/** Whether the heavy diagnostic work (sampling, capture, persistence) may run now. */
+		function diagnosticsAllowed() {
+			if (diagnosticsMode === "off" || diagnosticsMode === "expired")
+				return false;
+			try {
+				const deadline = window[DIAGNOSTICS_DEADLINE_KEY];
+				if (diagnosticsMode === "expiring" && typeof deadline === "number" && Date.now() >= deadline) {
+					expireDiagnostics();
+					return false;
+				}
+			}
+			catch (_) { /* a frozen window keeps them running */ }
+			return true;
+		}
+
+		/**
+		 * Stop the heavy diagnostics and leave the page as it was.
+		 *
+		 * The captures live on the window keyed record, so restoring them here also covers a
+		 * hot-swapped successor; the last snapshot is written once so a reader can still see
+		 * what the page looked like when the window closed.
+		 */
+		function expireDiagnostics() {
+			if (diagnosticsMode === "off" || diagnosticsMode === "expired")
+				return;
+			diagnosticsMode = "expired";
+			diagnostics.diagnosticsMode = "expired";
+			diagnostics.diagnosticsExpiredAt = new Date().toISOString();
+			try {
+				releaseCaptures();
+			}
+			catch (_) { /* already gone */ }
+			persistDiagnostics();
+		}
+
+		/** Arm the one expiry timer per page; a hot swap must not restart the clock. */
+		function scheduleDiagnosticsExpiry(ttl) {
+			try {
+				if (window[DIAGNOSTICS_TIMER_KEY] !== undefined)
+					return;
+				const deadline = Date.now() + ttl;
+				window[DIAGNOSTICS_DEADLINE_KEY] = deadline;
+				window[DIAGNOSTICS_TIMER_KEY] = setTimeout(() => {
+					try {
+						delete window[DIAGNOSTICS_TIMER_KEY];
+					}
+					catch (_) { /* already gone */ }
+					diagnosticsAllowed();
+				}, ttl);
+			}
+			catch (_) { /* without timers the deadline check still expires them */ }
 		}
 
 		/** The diagnostics object that currently owns the page global. */
@@ -4094,6 +4198,8 @@ var module = { exports: {} };
 
 		/** Snapshot the document facts that decide whether the toolbar can work here at all. */
 		function sampleEnvironment() {
+			if (!diagnosticsAllowed())
+				return;
 			try {
 				diagnostics.tick += 1;
 				// `sampledAt` is stamped by the write path only, so sampling alone never
@@ -4127,9 +4233,19 @@ var module = { exports: {} };
 
 		/** Install every diagnostic hook the plugin face needs before the plugins mount. */
 		function initDiagnostics() {
-			installCaptures();
+			const policy = diagnosticsPolicy();
+			diagnosticsMode = policy.mode;
+			diagnostics.diagnosticsMode = policy.mode;
+			// The rAF fallback is a correctness measure, not a diagnostic: it stays either way.
 			probeAnimationFrame();
+			if (policy.mode === "off") {
+				diagnostics.diagnosticsExpiredAt = new Date().toISOString();
+				return;
+			}
+			installCaptures();
 			sampleEnvironment();
+			if (policy.mode === "expiring")
+				scheduleDiagnosticsExpiry(policy.ttl);
 		}
 		//#endregion
 
@@ -4422,7 +4538,7 @@ var module = { exports: {} };
 					installActions(layer.context, layer);
 				refreshMarker();
 				const now = Date.now();
-				if (now - lastSampleAt >= SAMPLE_MS) {
+				if (now - lastSampleAt >= SAMPLE_MS && diagnosticsAllowed()) {
 					lastSampleAt = now;
 					sampleEnvironment();
 				}

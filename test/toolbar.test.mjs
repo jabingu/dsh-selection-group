@@ -522,6 +522,95 @@ test('a hot swap must not leave the toolbar unstyled', () => {
   window.close()
 })
 
+/** Count writes to the diagnostics key (jsdom's localStorage is a proxy, so patch the prototype). */
+function countingStorage(window) {
+  const writes = []
+  const proto = window.Storage.prototype
+  const original = proto.setItem
+  proto.setItem = function (key, value) {
+    if (key === 'dsh-selection-group.diagnostics')
+      writes.push(value)
+    return original.call(this, key, value)
+  }
+  return { writes, restore: () => { proto.setItem = original } }
+}
+
+test('diagnostics can be switched off entirely before mount', async () => {
+  const { window, document, mod } = boot()
+  window.__DSH_SELECTION_GROUP_DIAGNOSTICS__ = false
+  const warnBefore = window.console.warn
+  const storage = countingStorage(window)
+
+  const dispose = mod.apply(stubContext().context)
+  await wait(300)
+
+  assert.equal(window.console.warn, warnBefore, 'console must stay untouched')
+  assert.equal(window.__DSH_SELECTION_GROUP__.diagnosticsMode, 'off')
+  assert.equal(storage.writes.length, 0, 'and nothing may be written to disk')
+
+  // The toolbar itself must be unaffected by the switch.
+  select(window, 'user-line')
+  assert.ok(document.querySelector(`.${BAR_CLASS}`) !== null, 'the box still works with diagnostics off')
+  assert.equal(document.documentElement.hasAttribute(HIDE_ATTR), true)
+
+  storage.restore()
+  dispose()
+  window.close()
+})
+
+test('diagnostics expire by themselves and put the page back', async () => {
+  const { window, document, mod } = boot()
+  window.__DSH_SELECTION_GROUP_DIAGNOSTICS_TTL_MS__ = 150
+  const warnBefore = window.console.warn
+  const storage = countingStorage(window)
+
+  const dispose = mod.apply(stubContext().context)
+  assert.notEqual(window.console.warn, warnBefore, 'installed while they run')
+
+  await wait(500)
+  assert.equal(window.console.warn, warnBefore, 'restored once the window expired')
+  assert.equal(window.__DSH_SELECTION_GROUP__.diagnosticsMode, 'expired')
+
+  const stored = JSON.parse(window.localStorage.getItem('dsh-selection-group.diagnostics'))
+  assert.equal(stored.diagnosticsMode, 'expired', 'the final snapshot says why sampling stopped')
+  assert.notEqual(stored.diagnosticsExpiredAt, null)
+
+  const writesAtExpiry = storage.writes.length
+  await wait(600)
+  assert.equal(storage.writes.length, writesAtExpiry, 'and nothing is written after that')
+
+  // The toolbar keeps working; only the diagnostics went away.
+  select(window, 'user-line')
+  assert.ok(document.querySelector(`.${BAR_CLASS}`) !== null, 'the box still works after expiry')
+  assert.equal(document.documentElement.hasAttribute(HIDE_ATTR), true, 'and the marker still applies')
+
+  storage.restore()
+  dispose()
+  window.close()
+})
+
+test('diagnostics can be forced to keep running', async () => {
+  const { window, document, mod } = boot()
+  window.__DSH_SELECTION_GROUP_DIAGNOSTICS__ = true
+  window.__DSH_SELECTION_GROUP_DIAGNOSTICS_TTL_MS__ = 150
+  const warnBefore = window.console.warn
+
+  const dispose = mod.apply(stubContext().context)
+  const wrapped = window.console.warn
+  assert.notEqual(wrapped, warnBefore, 'installed at mount')
+
+  await wait(400)
+  assert.equal(window.console.warn, wrapped, 'still capturing well past the TTL')
+  assert.equal(window.__DSH_SELECTION_GROUP__.diagnosticsMode, 'on')
+  assert.equal(window.__DSH_SELECTION_GROUP__.diagnosticsExpiredAt, null)
+
+  select(window, 'user-line')
+  assert.ok(document.querySelector(`.${BAR_CLASS}`) !== null)
+
+  dispose()
+  window.close()
+})
+
 test('a stylesheet removed behind our back is restored at once', async () => {
   const { window, document, mod } = boot()
   const dispose = mod.apply(stubContext().context)

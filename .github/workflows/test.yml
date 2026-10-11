@@ -8,6 +8,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A stalled runner should fail fast instead of hanging for the six-hour default:
+    # two runs stalled on /alternating/ matrix legs with identical, green-elsewhere code.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:

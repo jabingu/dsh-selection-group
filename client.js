@@ -3694,7 +3694,7 @@ var module = { exports: {} };
 		 */
 
 		//#region constants
-		const CLIENT_VERSION = "1.3.3";
+		const CLIENT_VERSION = "1.3.4";
 		const STYLE_ID = "dsh-selection-group-style";
 		const MARKER_ATTR = "data-dsh-selection-group";
 		const HIDE_ATTR = "data-dsh-selection-group-bar";
@@ -3710,6 +3710,8 @@ var module = { exports: {} };
 		const CAPTURE_KEY = "__DSH_SELECTION_GROUP_CAPTURE__";
 		/** Published by the glue: true while the pointer is down, so the toolbar waits for the release. */
 		const DRAGGING_KEY = "__DSH_SELECTION_GROUP_IS_DRAGGING__";
+		/** Where that state actually lives: one record per page, not per hot-swapped copy. */
+		const DRAGGING_STATE_KEY = "__DSH_SELECTION_GROUP_DRAGGING_STATE__";
 		const DIAGNOSTICS_KEY = "__DSH_SELECTION_GROUP__";
 		const DIAGNOSTICS_STORAGE_KEY = "dsh-selection-group.diagnostics";
 		/**
@@ -4209,6 +4211,23 @@ var module = { exports: {} };
 			}
 		}
 
+		/** True while the pointer is down (a drag or a hold) anywhere on the page. */
+		function isDragging() {
+			try {
+				return window[DRAGGING_STATE_KEY] === true;
+			}
+			catch (_) {
+				return false;
+			}
+		}
+
+		function setDragging(value) {
+			try {
+				window[DRAGGING_STATE_KEY] = value === true;
+			}
+			catch (_) { /* a frozen window must not stop the bundle */ }
+		}
+
 		/** Whether a selection is active and inside the conversation transcript. */
 		function selectionState() {
 			try {
@@ -4243,7 +4262,10 @@ var module = { exports: {} };
 			const card = document.querySelector(`.${ANNOTATION_CARD_CLASS}`);
 			const state = selectionState();
 			const waiting = state.active && state.inTranscript && (Date.now() - lastSelectionAt) < GRACE_MS;
-			const hide = bar !== null || card !== null || waiting;
+			// While the pointer is down the shared box deliberately waits for the release, so
+			// neither the box nor the grace window can justify hiding the standalone button —
+			// the hold itself must, or a pause mid-drag exposes it.
+			const hide = bar !== null || card !== null || waiting || isDragging();
 			const root = document.documentElement;
 			if (hide) {
 				if (!root.hasAttribute(HIDE_ATTR))
@@ -4403,19 +4425,18 @@ var module = { exports: {} };
 			// crossing a message boundary closes the box once — which made it flicker.
 			// The release runs a selectionchange in its own turn, so the box appears with
 			// no settle delay at all.
-			let pointerDown = false;
-			const isDragging = () => pointerDown === true;
 			try {
 				window[DRAGGING_KEY] = isDragging;
 			}
 			catch (_) { /* a frozen window must not stop the bundle */ }
 			const onPointerDown = () => {
-				pointerDown = true;
+				setDragging(true);
+				refreshMarker();
 			};
 			const onPointerUp = () => {
-				if (pointerDown === false)
+				if (isDragging() === false)
 					return;
-				pointerDown = false;
+				setDragging(false);
 				try {
 					if (typeof window.Event === "function")
 						document.dispatchEvent(new window.Event("selectionchange"));
@@ -4477,6 +4498,7 @@ var module = { exports: {} };
 					releaseCaptures();
 					try {
 						delete window[DRAGGING_KEY];
+						delete window[DRAGGING_STATE_KEY];
 					}
 					catch (_) { /* already gone */ }
 				}

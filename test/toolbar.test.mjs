@@ -459,6 +459,31 @@ test('a stylesheet removed behind our back is restored at once', async () => {
   window.close()
 })
 
+test('holding the pointer down keeps the standalone button hidden', async () => {
+  // The grace window releases the standalone button when no shared box appeared —
+  // but while a drag is in flight that would expose it mid-selection, exactly the
+  // momentary 引用 pill the user saw. The hold must keep it hidden until release.
+  const { window, document, mod } = boot()
+  const dispose = mod.apply(stubContext().context)
+  const pointer = (type) => document
+    .querySelector('[data-slot="conversation.session"]')
+    .dispatchEvent(new window.Event(type, { bubbles: true, cancelable: true }))
+
+  pointer('pointerdown')
+  select(window, 'user-line')
+  await wait(400) // beyond GRACE_MS: only the hold can still justify hiding it
+
+  assert.equal(document.querySelector(`.${BAR_CLASS}`), null, 'no shared box during the hold')
+  assert.equal(document.documentElement.hasAttribute(HIDE_ATTR), true, 'and the standalone button stays hidden')
+
+  pointer('pointerup')
+  assert.ok(document.querySelector(`.${BAR_CLASS}`) !== null, 'the release paints the shared box')
+  assert.equal(document.documentElement.hasAttribute(HIDE_ATTR), true, 'which keeps the standalone button hidden')
+
+  dispose()
+  window.close()
+})
+
 test('a drag paints no box until the pointer is released', async () => {
   const { window, document, mod } = boot()
   const dispose = mod.apply(stubContext().context)

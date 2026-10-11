@@ -120,7 +120,10 @@ that symbol name.
   frame fires `selectionchange` and the frame that crosses a message boundary closes
   the box upstream, which made it flicker — and **appears in the turn the pointer is
   released** (`pointerup` re-dispatches one `selectionchange`, so there is no 120 ms
-  settle wait either). Non-drag paths (double-click, keyboard, programmatic
+  settle wait either). **The standalone button stays hidden for the whole hold too**:
+  since the shared box is deliberately waiting for the release, the grace window
+  cannot justify releasing it — otherwise a pause of more than 300 ms mid-drag
+  exposes that lone 引用 pill. Non-drag paths (double-click, keyboard, programmatic
   selection) still paint in the same turn.
 - **No network requests, no file writes, no host permissions.**
 

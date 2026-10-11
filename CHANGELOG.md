@@ -159,3 +159,4 @@
 [1.3.5]: https://github.com/jabingu/dsh-selection-group/commit/f2e93e8
 [1.3.4]: https://github.com/jabingu/dsh-selection-group/commit/a3fcc86
 [1.3.3]: https://github.com/jabingu/dsh-selection-group/commit/ca24650
+[1.3.8]: https://github.com/jabingu/dsh-selection-group/commit/51a76a0

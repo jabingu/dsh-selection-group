@@ -137,6 +137,22 @@ function select(window, id) {
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/**
+ * Wait for a condition instead of a fixed delay.
+ *
+ * Fixed waits flake on a loaded CI runner (a 150 ms timer can land well after 500 ms),
+ * and CI shows that as a failing assertion — which used to hang the job entirely.
+ */
+async function waitFor(predicate, timeout = 5000, step = 25) {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    if (predicate())
+      return true
+    await wait(step)
+  }
+  return predicate()
+}
+
 test('registering the fiber effect must not dispose the plugin (cordis runs it now)', async () => {
   const { window, document, mod } = boot()
   const { context, cleanups } = stubContext()
@@ -583,16 +599,18 @@ test('diagnostics expire by themselves and put the page back', async () => {
   const dispose = mod.apply(stubContext().context)
   assert.notEqual(window.console.warn, warnBefore, 'installed while they run')
 
-  await wait(500)
+  await waitFor(() => window.console.warn === warnBefore)
   assert.equal(window.console.warn, warnBefore, 'restored once the window expired')
   assert.equal(window.__DSH_SELECTION_GROUP__.diagnosticsMode, 'expired')
 
+  // The final snapshot goes through the 250 ms write throttle, so wait for it too.
+  await waitFor(() => (window.localStorage.getItem('dsh-selection-group.diagnostics') ?? '').includes('"diagnosticsMode":"expired"'))
   const stored = JSON.parse(window.localStorage.getItem('dsh-selection-group.diagnostics'))
   assert.equal(stored.diagnosticsMode, 'expired', 'the final snapshot says why sampling stopped')
   assert.notEqual(stored.diagnosticsExpiredAt, null)
 
   const writesAtExpiry = storage.writes.length
-  await wait(600)
+  await wait(400)
   assert.equal(storage.writes.length, writesAtExpiry, 'and nothing is written after that')
 
   // The toolbar keeps working; only the diagnostics went away.
@@ -643,7 +661,7 @@ test('a stylesheet removed behind our back is restored at once', async () => {
   const { window, document, mod } = boot()
   const dispose = mod.apply(stubContext().context)
   document.getElementById(STYLE_ID).remove() // e.g. a predecessor's teardown
-  await wait(200)                            // one heartbeat is enough
+  await waitFor(() => document.getElementById(STYLE_ID) !== null)
   assert.ok(document.getElementById(STYLE_ID) !== null, 'the heartbeat must restore it')
   assert.equal(window.__DSH_SELECTION_GROUP__.stylePresent, true)
   dispose()
@@ -807,7 +825,7 @@ test('if the shared box never arrives, the standalone button comes back', async 
   select(window, 'user-line')
   assert.equal(document.documentElement.hasAttribute(HIDE_ATTR), true, 'hidden while the toolbar is still expected')
 
-  await wait(500)
+  await waitFor(() => document.documentElement.hasAttribute(HIDE_ATTR) === false)
   assert.equal(document.documentElement.hasAttribute(HIDE_ATTR), false, 'released once the grace window expired')
   assert.equal(window.__DSH_SELECTION_GROUP__.quoteButtonHidden, false, 'so 引用 stays reachable on its own')
 

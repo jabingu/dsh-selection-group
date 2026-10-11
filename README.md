@@ -141,12 +141,12 @@
 ```sh
 npm install                     # 只有一个开发依赖：jsdom
 npm run build                   # 重新生成 client.js
-npm test                        # 50 项
+npm test                        # 51 项
 ```
 
 | 测试文件 | 覆盖 |
 |---|---|
-| `test/toolbar.test.mjs`（29） | 动作 hook 与条件隐藏；**一个框里两个按钮**；**点击「引用」真的走通 quote 的原生插入**（断言官方 facade 收到一次 `insertReference` 且带选中文字）；有框时隐藏 / 无框时恢复；用户消息里也成立；rAF 垫片；拖拽门控；热插拔；诊断的三种模式（默认过期 / 强制开启 / 完全关闭）与镜像快照 |
+| `test/toolbar.test.mjs`（30） | 动作 hook 与条件隐藏；**一个框里两个按钮**；**点击「引用」真的走通 quote 的原生插入**（断言官方 facade 收到一次 `insertReference` 且带选中文字）；有框时隐藏 / 无框时恢复；用户消息里也成立；rAF 垫片；拖拽门控；热插拔；诊断的三种模式（默认过期 / 强制开启 / 完全关闭）与镜像快照 |
 | `test/integration.test.mjs`（3） | 真实挂载合并 bundle：两个内联插件都创建 UI、glue 发布动作、**不移动任何 DOM**、无运行期上游引用 |
 | `test/vendor.test.mjs`（6） | vendor 哈希/许可、内联体 = vendor + 已声明补丁、每处偏离的锚点/理由/是否落盘、无上游引用、构建可复现 |
 | `test/manifest.test.mjs`（5）+ `test/contract.test.mjs`（3） | 包形状、面板本地化元数据与内联代码/glue 的 DOM 契约 |

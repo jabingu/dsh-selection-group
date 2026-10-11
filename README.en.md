@@ -180,12 +180,12 @@ DevTools is **F12** in this app (`Fn+F12` if the system grabs it).
 ```sh
 npm install                     # one development dependency: jsdom
 npm run build                   # regenerate client.js
-npm test                        # 50 tests
+npm test                        # 51 tests
 ```
 
 | Test file | Covers |
 |---|---|
-| `test/toolbar.test.mjs` (29) | action hook and conditional hiding; **one box, two buttons**; **pressing 引用 really runs quote's native insertion** (asserts the official facade receives one `insertReference` carrying the selection); hidden while the box is up and released when it is not; works in the user's own message; drag behaviour; hot swap; rAF shim; the three diagnostics modes (expiring by default / forced on / off) |
+| `test/toolbar.test.mjs` (30) | action hook and conditional hiding; **one box, two buttons**; **pressing 引用 really runs quote's native insertion** (asserts the official facade receives one `insertReference` carrying the selection); hidden while the box is up and released when it is not; works in the user's own message; drag behaviour; hot swap; rAF shim; the three diagnostics modes (expiring by default / forced on / off) |
 | `test/integration.test.mjs` (3) | mounting the merged bundle for real: both inlined plugins create their UI, the glue publishes its actions, **no DOM is moved**, no runtime upstream reference |
 | `test/vendor.test.mjs` (6) | vendor hashes/licences, inlined bodies = vendor + declared patches, each deviation's anchor/reason/presence, no upstream reference, reproducible build and an up-to-date `client.js` |
 | `test/manifest.test.mjs` (5) + `test/contract.test.mjs` (3) | package shape, locale metadata, and the DOM contract of the inlined code |

@@ -589,6 +589,18 @@ test('diagnostics expire by themselves and put the page back', async () => {
   window.close()
 })
 
+test('unmounting clears the expiry timer it armed', async () => {
+  const { window, mod } = boot()
+  window.__DSH_SELECTION_GROUP_DIAGNOSTICS_TTL_MS__ = 5000 // a regression costs 5 s, not 3 min
+  const dispose = mod.apply(stubContext().context)
+  assert.notEqual(window.__DSH_SELECTION_GROUP_DIAGNOSTICS_TIMER__, undefined, 'armed at mount')
+
+  dispose()
+  assert.equal(window.__DSH_SELECTION_GROUP_DIAGNOSTICS_TIMER__, undefined, 'and cleared on unmount')
+  assert.equal(window.__DSH_SELECTION_GROUP_DIAGNOSTICS_DEADLINE__, undefined, 'the deadline goes with it')
+  window.close()
+})
+
 test('diagnostics can be forced to keep running', async () => {
   const { window, document, mod } = boot()
   window.__DSH_SELECTION_GROUP_DIAGNOSTICS__ = true

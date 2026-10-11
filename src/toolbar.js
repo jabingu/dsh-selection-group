@@ -945,6 +945,24 @@ function mountSelectionToolbar(ctx) {
 				delete window[DRAGGING_STATE_KEY];
 			}
 			catch (_) { /* already gone */ }
+			// Nothing left to diagnose: cancel the expiry timer and the pending write, or
+			// an unmounted plugin would keep the page (and any test process) waiting for
+			// a timer nobody is interested in any more.
+			try {
+				const diagnosticsTimer = window[DIAGNOSTICS_TIMER_KEY];
+				if (diagnosticsTimer !== undefined)
+					clearTimeout(diagnosticsTimer);
+				delete window[DIAGNOSTICS_TIMER_KEY];
+				delete window[DIAGNOSTICS_DEADLINE_KEY];
+			}
+			catch (_) { /* already gone */ }
+			try {
+				if (persistTimer !== null) {
+					clearTimeout(persistTimer);
+					persistTimer = null;
+				}
+			}
+			catch (_) { /* already gone */ }
 		}
 		// Only the owner removes shared resources: a successor may already be live
 		// and reusing them (it claims ownership on its next ensure).

@@ -3729,7 +3729,7 @@ var module = { exports: {} };
 		 */
 
 		//#region constants
-		const CLIENT_VERSION = "1.3.6";
+		const CLIENT_VERSION = "1.3.7";
 		const STYLE_ID = "dsh-selection-group-style";
 		const MARKER_ATTR = "data-dsh-selection-group";
 		const HIDE_ATTR = "data-dsh-selection-group-bar";
@@ -4650,6 +4650,24 @@ var module = { exports: {} };
 					try {
 						delete window[DRAGGING_KEY];
 						delete window[DRAGGING_STATE_KEY];
+					}
+					catch (_) { /* already gone */ }
+					// Nothing left to diagnose: cancel the expiry timer and the pending write, or
+					// an unmounted plugin would keep the page (and any test process) waiting for
+					// a timer nobody is interested in any more.
+					try {
+						const diagnosticsTimer = window[DIAGNOSTICS_TIMER_KEY];
+						if (diagnosticsTimer !== undefined)
+							clearTimeout(diagnosticsTimer);
+						delete window[DIAGNOSTICS_TIMER_KEY];
+						delete window[DIAGNOSTICS_DEADLINE_KEY];
+					}
+					catch (_) { /* already gone */ }
+					try {
+						if (persistTimer !== null) {
+							clearTimeout(persistTimer);
+							persistTimer = null;
+						}
 					}
 					catch (_) { /* already gone */ }
 				}

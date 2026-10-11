@@ -1,0 +1,10 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- one hover box … -->
+  <rect x="4.5" y="12.75" width="27" height="10.5" rx="5.25" fill="#4D6BFE" fill-opacity="0.12" stroke="#4D6BFE" stroke-width="1.5"/>
+  <path d="M19.5 13.5v9" stroke="#4D6BFE" stroke-width="1.5" stroke-linecap="round" stroke-opacity="0.5"/>
+  <!-- … with the annotate action on the left … -->
+  <path d="M9.75 18h4.5M12 15.75v4.5" stroke="#4D6BFE" stroke-width="1.8" stroke-linecap="round"/>
+  <!-- … and the quote action on the right. -->
+  <path d="M22.35 15.9h1.7v2.7c0 1.35-.8 2.25-2.15 2.6l-.35-1.1c.75-.22 1.15-.6 1.2-1.2h-.4c-.65 0-1.15-.45-1.15-1.05 0-.65.5-1.15 1.15-1.15Z" fill="#4D6BFE"/>
+  <path d="M26.35 15.9h1.7v2.7c0 1.35-.8 2.25-2.15 2.6l-.35-1.1c.75-.22 1.15-.6 1.2-1.2h-.4c-.65 0-1.15-.45-1.15-1.05 0-.65.5-1.15 1.15-1.15Z" fill="#4D6BFE"/>
+</svg>

@@ -1,0 +1,7 @@
+# dsh-selection-group Web bundle patch.
+# The host row is inert; it mounts the package's browser client entry (client.js),
+# which groups the floating selection toolbars of other plugins.
+
+- insert:
+    - id: dsh-selection-group
+      name: dsh-selection-group

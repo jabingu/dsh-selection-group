@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Selection Toolbar",
+    "description": "选中文字后出现一个悬停框，内含「批注」与「引用」两个动作；不依赖任何上游插件。"
+  }
+}

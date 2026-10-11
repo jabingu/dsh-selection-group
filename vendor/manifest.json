@@ -1,0 +1,20 @@
+{
+  "dsh-quote-followup": {
+    "version": "0.2.10",
+    "file": "dsh-quote-followup.client.js",
+    "license": "MIT",
+    "licenseFile": "LICENSE.dsh-quote-followup",
+    "copyright": "Copyright (c) 2026 tr1v3r",
+    "repository": "git+https://github.com/tr1v3r/dsh-quote-followup.git",
+    "sha256": "1b47ff6ef4330d9dddecb67c42951ad66ada29fbbcf298e71257ecc83c7c36cc"
+  },
+  "@changfenhuang/dsh-annotation": {
+    "version": "1.4.11",
+    "file": "dsh-annotation.client.js",
+    "license": "MIT",
+    "licenseFile": "LICENSE.dsh-annotation",
+    "copyright": "Copyright (c) 2026 omdsh-dev",
+    "repository": "git+https://github.com/omdsh-dev/dsh-annotation.git",
+    "sha256": "53c2d23ea1346845b2b2e6b7db8100f8a82879e43de75482009f9754e74a9039"
+  }
+}

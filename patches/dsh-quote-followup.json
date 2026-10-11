@@ -1,0 +1,18 @@
+{
+  "package": "dsh-quote-followup",
+  "summary": "One deliberate fork deviation: the pointerdown guard must tolerate the merged toolbar's own 引用 button, otherwise pressing it would discard the pending quote before the click lands.",
+  "edits": [
+    {
+      "id": "mousedown-tolerates-merged-trigger",
+      "why": "The merged bundle renders its 引用 button inside the annotation bar and triggers this plugin by clicking its (hidden) own button. That button lives outside the plugin's own element, so the upstream guard would dismiss the pending quote on pointerdown and the click would then do nothing.",
+      "find": "const onMouseDown = (event) => {\n\t\t\t\tif (event.target instanceof Element && event.target.id !== BUTTON_ID)\n\t\t\t\t\tdismissQuote();\n\t\t\t};",
+      "replace": "const onMouseDown = (event) => {\n\t\t\t\tif (event.target instanceof Element && event.target.id !== BUTTON_ID\n\t\t\t\t\t&& !(typeof event.target.closest === \"function\" && event.target.closest(\"[data-dsh-selection-group-action]\") !== null))\n\t\t\t\t\tdismissQuote();\n\t\t\t};"
+    },
+    {
+      "id": "fail-loud-without-excerpt",
+      "why": "A press with no pending excerpt used to return silently, so the merged toolbar could close its box with nothing inserted. It now shows the plugin own insert-failed notice, which also lets the glue keep the box open for a retry.",
+      "find": "\t\tconst onQuoteClick = () => {\n\t\t\tif (pendingQuote === null)\n\t\t\t\treturn;",
+      "replace": "\t\tconst onQuoteClick = () => {\n\t\t\tif (pendingQuote === null) {\n\t\t\t\t// FORK DEVIATION (dsh-selection-group): the merged toolbar's 引用 button can\n\t\t\t\t// be pressed after the pending excerpt was dropped (any window scroll, or a\n\t\t\t\t// pointerdown outside the button). Fail loudly instead of returning\n\t\t\t\t// silently: the person sees why, and the glue can tell a no-op from a real\n\t\t\t\t// insertion and leave its box open for a retry.\n\t\t\t\tshowNotice(\"notice.insert-failed\");\n\t\t\t\treturn;\n\t\t\t}"
+    }
+  ]
+}

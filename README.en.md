@@ -1,5 +1,7 @@
 # dsh-selection-group
 
+**Selection Toolbar** — the name the plugins panel shows (the package name, plugin id and repository are all `dsh-selection-group`: kebab-case for the identifier, a readable name for the panel).
+
 [![test](https://github.com/jabingu/dsh-selection-group/actions/workflows/test.yml/badge.svg)](https://github.com/jabingu/dsh-selection-group/actions/workflows/test.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -21,6 +23,8 @@ Both browser halves are inlined into this package **verbatim**, so both upstream
 plugins can stay disabled or be uninstalled entirely.
 
 ## Install
+
+The plugins panel lists it as **Selection Toolbar**.
 
 From the harness:
 

@@ -1,5 +1,7 @@
 # dsh-selection-group
 
+**Selection Toolbar** —— 插件面板里显示的名字（包名、插件 id、仓库名都是 `dsh-selection-group`；标识名用 kebab-case，面板名给人读，二者分工不同）。
+
 > **English summary** — A DSH client plugin that gives text selection in the chat
 > **one** hover toolbar with **two** actions (annotate + quote). It is a *merged*
 > build: both upstream plugins are vendored byte-for-byte and patched at build time,
@@ -51,6 +53,8 @@
 
 1. **完全退出 DeepSeek Harness（`Cmd+Q`）再打开**。
 2. `dsh-quote-followup`、`@changfenhuang/dsh-annotation` **继续保持停用或直接卸载**。⚠️ 不要重新启用：内联副本与上游使用相同的元素 id（`dsh-quote-followup-btn`），同时存在会互相抢 DOM。
+
+安装后在插件面板里显示为 **Selection Toolbar**。
 
 从零安装（新机器）：
 

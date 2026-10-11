@@ -3,6 +3,7 @@
 本项目的所有重要变更都记在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+> 项目名 `dsh-selection-group`（包名 / 插件 id / 仓库名），插件面板显示为 **Selection Toolbar**。
 > 仓库的 git 历史从 **1.3.3**（首次公开发布）开始；更早的条目按开发记录重建，按版本倒序排列。
 
 ## [1.3.7]

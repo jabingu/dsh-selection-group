@@ -21,6 +21,11 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm install --no-audit --no-fund
-      # `npm test` rebuilds client.js from vendor/ + src/ and fails when the
-      # committed artifact drifted, so a stale bundle can never be released.
-      - run: npm test
+      # Run the suite directly rather than through `npm test`: three runs stalled
+      # inside the npm wrapper's process tree while the same code passed on the other
+      # matrix leg (24 s) and repeated local runs, so the wrapper is the suspect.
+      # The spec reporter names the test a stall stops on.
+      # The build step also fails when the committed client.js drifted from
+      # vendor/ + src/, so a stale bundle can never be released.
+      - run: node scripts/build.mjs
+      - run: node --test --test-reporter=spec test/*.test.mjs

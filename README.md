@@ -105,11 +105,23 @@
 - **失败不静默**：若引用没能插入（没有输入框、输入框被锁、摘录确实已经失效），上游插件会**弹出原因提示**，且**框保持打开**让你重新选择重试——不会出现"点了没反应、框还消失了"。
 - **框在屏上时摘录不会莫名丢失**：上游在"选区失效"（文本变空、矩形测不到 —— 流式输出时聊天区重渲染就会这样）或"任何滚动"时会丢弃待引用摘录，而批注的框此时**不会关**，于是你按「引用」就会撞上"摘录已保留，请选中原文重试"。本包打了补丁：**只要合并工具条还在接管（标记在），上述两种情形都不丢弃摘录**；Escape、点框外、独立模式下的滚动仍按上游语义处理。
 - **编辑卡片期间也隐藏独立按钮**：批注的框换成编辑卡片后，独立「引用」按钮不再冒出来压住卡片。
-- **开销**：工具栏是**事件驱动**的——`selectionchange` 当回合打标记，`MutationObserver`（body / head / annotation host，childList）跟随框与编辑卡片的出现与消失，宽限期用一次性 timeout，1 秒的定时器只做兜底（自愈 + 采样）。实测**完全空闲**时：DOM 查询 ~18 次/秒（原来是 ~110），已无空闲 localStorage 写入（只在 mount 与真实状态变化时写）。若还想更省，把 `TICK_MS`/`SAMPLE_MS` 调大即可。
+- **开销**：工具栏是**事件驱动**的——`selectionchange` 当回合打标记，`MutationObserver`（body / head / annotation host，childList）跟随框与编辑卡片的出现与消失，宽限期用一次性 timeout，1 秒的定时器只做兜底（自愈 + 采样）。实测**完全空闲**时：诊断全量期间 ~18 次 DOM 查询/秒（原来是 ~110），**过期/关闭后 ~8 次/秒且零写盘**。若还想更省，把 `TICK_MS`/`SAMPLE_MS` 调大即可。
 - **显示时机**：**按住鼠标期间不出框**（拖拽每一帧都会触发 `selectionchange`，且跨消息边界那一帧上游会收框，于是会闪），**松开鼠标的那一回合立刻出框**——`pointerup` 会补发一次 `selectionchange`，所以既没有闪烁，也不用等上游的 120ms settle。**按住期间独立「引用」按钮同样保持隐藏**：共享框既然要等松手，宽限期就不能成为它的理由，否则你按住停顿超过 300ms 就会看到那颗孤立的引用按钮。非拖拽路径（双击选词、键盘选择、程序化选择）依旧**当回合**出框。
 - **不含**任何网络请求、文件写入或主机权限。
 
 ## 排障（自证诊断，不用开控制台）
+
+**诊断默认只跑 3 分钟。** 它们会包装 `console.warn/error`、监听 window 错误并每秒采样，对排查刚启动时的问题很值；长期挂在别人的页面上则不合适。
+
+| 想要 | 做法（在插件加载前设置） |
+|---|---|
+| 一直开着 | `window.__DSH_SELECTION_GROUP_DIAGNOSTICS__ = true` |
+| 完全关掉（不挂钩子、不写盘、不采样） | `window.__DSH_SELECTION_GROUP_DIAGNOSTICS__ = false` |
+| 改过期时长（毫秒） | `window.__DSH_SELECTION_GROUP_DIAGNOSTICS_TTL_MS__ = 600000` |
+
+过期（或关闭）时：console 与错误监听被**还原**、采样与写盘停止，并**写入最后一份快照**（含 `diagnosticsMode: "expired"`、`diagnosticsExpiredAt`）；`window.__DSH_SELECTION_GROUP__` 里那些**事件驱动的轻量字段**（`applied` / `barUp` / `cardUp` / `quoteButtonHidden` / `diagnosticsMode`）继续可用。工具栏功能不受影响——标记、观察者、动作 hook、拖拽跟踪，以及 rAF 兜底垫片（那是正确性修复，不是诊断）都不随开关关闭。
+
+实测空闲开销：全量运行时 ~18 次 DOM 查询/秒（有写盘）；**过期或关闭后 ~8 次/秒、零写盘**（剩下的是标记与自愈的功能下限，1 秒一次）。
 
 诊断同时挂在 `window.__DSH_SELECTION_GROUP__` 并**写进 `localStorage['dsh-selection-group.diagnostics']`**（Electron 把它落在磁盘上，可直接读）：
 
@@ -129,12 +141,12 @@
 ```sh
 npm install                     # 只有一个开发依赖：jsdom
 npm run build                   # 重新生成 client.js
-npm test                        # 43 项
+npm test                        # 50 项
 ```
 
 | 测试文件 | 覆盖 |
 |---|---|
-| `test/toolbar.test.mjs`（26） | 动作 hook 与条件隐藏；**一个框里两个按钮**；**点击「引用」真的走通 quote 的原生插入**（断言官方 facade 收到一次 `insertReference` 且带选中文字）；有框时隐藏 / 无框时恢复；用户消息里也成立；rAF 垫片；诊断持续采样并镜像到 localStorage |
+| `test/toolbar.test.mjs`（29） | 动作 hook 与条件隐藏；**一个框里两个按钮**；**点击「引用」真的走通 quote 的原生插入**（断言官方 facade 收到一次 `insertReference` 且带选中文字）；有框时隐藏 / 无框时恢复；用户消息里也成立；rAF 垫片；拖拽门控；热插拔；诊断的三种模式（默认过期 / 强制开启 / 完全关闭）与镜像快照 |
 | `test/integration.test.mjs`（3） | 真实挂载合并 bundle：两个内联插件都创建 UI、glue 发布动作、**不移动任何 DOM**、无运行期上游引用 |
 | `test/vendor.test.mjs`（6） | vendor 哈希/许可、内联体 = vendor + 已声明补丁、每处偏离的锚点/理由/是否落盘、无上游引用、构建可复现 |
 | `test/manifest.test.mjs`（5）+ `test/contract.test.mjs`（3） | 包形状、面板本地化元数据与内联代码/glue 的 DOM 契约 |

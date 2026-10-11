@@ -116,12 +116,11 @@ that symbol name.
   excerpt**. Escape, outside presses and scrolls in standalone mode keep their meaning.
 - **The editor card also hides the standalone button**, so it cannot pop up over an
   open card.
-- **Cost**: the toolbar is **event-driven** — `selectionchange` sets the marker in
+- **Cost, with the diagnostics expiring after 3 minutes**: the toolbar is **event-driven** — `selectionchange` sets the marker in
   its own turn, a `MutationObserver` (body / head / annotation host, `childList`)
   follows the box and the card, the grace window is a one-shot timer, and a 1 s
   interval only self-heals and samples. Measured completely idle: ~18 DOM queries a
-  second (down from ~110) and no idle `localStorage` writes (writes happen on mount
-  and on real state changes only). Raise `TICK_MS`/`SAMPLE_MS` to go lower still.
+  second (down from ~110) and **~8 a second with zero writes once they expire**, which is the default. Raise `TICK_MS`/`SAMPLE_MS` to go lower still.
 - **When the box appears**: **it stays away while the pointer is down** — every drag
   frame fires `selectionchange` and the frame that crosses a message boundary closes
   the box upstream, which made it flicker — and **appears in the turn the pointer is
@@ -134,6 +133,28 @@ that symbol name.
 - **No network requests, no file writes, no host permissions.**
 
 ## Troubleshooting (self-reporting diagnostics, no DevTools needed)
+
+**The diagnostics run for three minutes by default.** They wrap `console.warn/error`,
+listen for window errors and sample the DOM once a second — useful for a startup
+problem, wrong to leave on someone else's page forever.
+
+| Want | Do this (before the plugin loads) |
+|---|---|
+| keep them on | `window.__DSH_SELECTION_GROUP_DIAGNOSTICS__ = true` |
+| switch them off entirely (no hooks, no writes, no sampling) | `window.__DSH_SELECTION_GROUP_DIAGNOSTICS__ = false` |
+| change the window in milliseconds | `window.__DSH_SELECTION_GROUP_DIAGNOSTICS_TTL_MS__ = 600000` |
+
+On expiry (or when switched off) the console wrappers and error listeners are
+**restored**, sampling and persistence stop, and **one final snapshot** is written
+carrying `diagnosticsMode: "expired"` and `diagnosticsExpiredAt`. The cheap,
+event-driven fields on `window.__DSH_SELECTION_GROUP__` (`applied` / `barUp` /
+`cardUp` / `quoteButtonHidden` / `diagnosticsMode`) stay readable. Nothing about the
+toolbar changes: the marker, the observer, the action hook, drag tracking and the rAF
+fallback (a correctness measure, not a diagnostic) are never switched off.
+
+Measured idle cost: ~18 DOM queries a second while running, with writes; **~8 a second
+and zero writes once expired or off** (the remainder is the functional floor: one
+marker/self-heal pass a second).
 
 The diagnostics live on `window.__DSH_SELECTION_GROUP__` and are mirrored into
 `localStorage['dsh-selection-group.diagnostics']` (Electron keeps that on disk, so it
@@ -159,12 +180,12 @@ DevTools is **F12** in this app (`Fn+F12` if the system grabs it).
 ```sh
 npm install                     # one development dependency: jsdom
 npm run build                   # regenerate client.js
-npm test                        # 43 tests
+npm test                        # 50 tests
 ```
 
 | Test file | Covers |
 |---|---|
-| `test/toolbar.test.mjs` (26) | action hook and conditional hiding; **one box, two buttons**; **pressing 引用 really runs quote's native insertion** (asserts the official facade receives one `insertReference` carrying the selection); hidden while the box is up and released when it is not; works in the user's own message; drag behaviour; hot swap; rAF shim; diagnostics |
+| `test/toolbar.test.mjs` (29) | action hook and conditional hiding; **one box, two buttons**; **pressing 引用 really runs quote's native insertion** (asserts the official facade receives one `insertReference` carrying the selection); hidden while the box is up and released when it is not; works in the user's own message; drag behaviour; hot swap; rAF shim; the three diagnostics modes (expiring by default / forced on / off) |
 | `test/integration.test.mjs` (3) | mounting the merged bundle for real: both inlined plugins create their UI, the glue publishes its actions, **no DOM is moved**, no runtime upstream reference |
 | `test/vendor.test.mjs` (6) | vendor hashes/licences, inlined bodies = vendor + declared patches, each deviation's anchor/reason/presence, no upstream reference, reproducible build and an up-to-date `client.js` |
 | `test/manifest.test.mjs` (5) + `test/contract.test.mjs` (3) | package shape, locale metadata, and the DOM contract of the inlined code |

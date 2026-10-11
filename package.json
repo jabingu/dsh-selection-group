@@ -40,7 +40,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && node --test --test-concurrency=1 test/*.test.mjs",
+    "test": "node scripts/build.mjs && node --test test/*.test.mjs",
     "verify": "node --test test/*.test.mjs"
   },
   "engines": {

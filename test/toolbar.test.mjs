@@ -279,10 +279,10 @@ test('pressing inside the shared box never breaks the next 引用 press', async 
     bar.dispatchEvent(new window.Event(type, { bubbles: true, cancelable: true }))
   for (const type of ['pointerup', 'mouseup'])
     bar.dispatchEvent(new window.Event(type, { bubbles: true, cancelable: true }))
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
 
   document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
   assert.equal(inserted.length, 1, 'the excerpt must survive a press inside the box')
   assert.equal(document.getElementById(QUOTE_NOTICE_ID)?.textContent ?? '', '', 'with no failure notice')
 
@@ -305,11 +305,11 @@ test('a transcript re-render must not discard the excerpt', async () => {
   // The stream re-renders the row the selection lives in.
   document.getElementById('user-line').textContent = ''
   document.dispatchEvent(new window.Event('selectionchange'))
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
   assert.ok(document.querySelector(`.${BAR_CLASS}`) !== null, 'the box is still up')
 
   document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
   assert.equal(inserted.length, 1, '引用 must still insert the excerpt the person selected')
   assert.equal(document.getElementById(QUOTE_NOTICE_ID)?.textContent ?? '', '', 'with no failure notice')
 
@@ -329,7 +329,7 @@ test('a press that cannot insert must say so and keep the box open', async () =>
   document.querySelector('[data-composer-card]').remove()
 
   document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
 
   assert.equal(inserted.length, 0, 'nothing could be inserted')
   assert.notEqual(document.getElementById(QUOTE_NOTICE_ID)?.textContent ?? '', '', 'the plugin must say why')
@@ -349,9 +349,9 @@ test('pressing 引用 never fails silently, whatever dismissed the excerpt', asy
 
   select(window, 'user-line')
   window.dispatchEvent(new window.Event('scroll'))
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
   document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
 
   const notice = document.getElementById(QUOTE_NOTICE_ID)?.textContent ?? ''
   const box = document.querySelector(`.${BAR_CLASS}`)
@@ -375,18 +375,18 @@ test('applying the bundle twice in one realm keeps 引用 alive', async () => {
   const second = stubContext()
   const disposeFirst = mod.apply(first.context)
   const disposeSecond = mod.apply(second.context)
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
 
   assert.equal(document.querySelectorAll(`#${QUOTE_ID}`).length, 1, 'exactly one quote button after the swap')
 
   disposeFirst() // the predecessor is torn down afterwards
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
   assert.ok(document.getElementById(QUOTE_ID) !== null, 'the button must survive the predecessor teardown')
 
   select(window, 'user-line')
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
   document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
-  await wait(60)
+  await wait(150)  // settle the cross-plugin pipeline; 60 ms flaked under parallel load
   assert.equal(second.inserted.length, 1, 'the live layer inserts exactly once')
   assert.equal(first.inserted.length, 0, 'and the retired layer inserts nothing')
 

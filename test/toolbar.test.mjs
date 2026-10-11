@@ -243,6 +243,80 @@ test('pressing 批注 replaces the box with the editor card', async () => {
   window.close()
 })
 
+test('a scroll while the box is up must not discard the excerpt', () => {
+  // The transcript auto-scrolls while an answer streams, and the quote plugin drops
+  // its pending excerpt on any scroll. Pressed in the same turn (before anything can
+  // re-arm it) 引用 must still insert, which is exactly what the guard buys.
+  const { window, document, mod } = boot()
+  const { context, inserted } = stubContext()
+  const dispose = mod.apply(context)
+
+  select(window, 'user-line')
+  assert.ok(document.querySelector(`.${BAR_CLASS}`) !== null, 'precondition: the box is up')
+
+  window.dispatchEvent(new window.Event('scroll'))
+  document.querySelector(`[${ACTION_ATTR}="quote"]`).click() // same turn as the scroll
+  assert.equal(inserted.length, 1, '引用 must insert even though the page scrolled')
+  assert.equal(document.getElementById(QUOTE_NOTICE_ID)?.textContent ?? '', '', 'with no failure notice')
+
+  dispose()
+  window.close()
+})
+
+test('pressing inside the shared box never breaks the next 引用 press', async () => {
+  // Touching the box background (or the 批注 button) used to drop the pending excerpt
+  // while the box stayed up, so the next press of 引用 failed.
+  const { window, document, mod } = boot()
+  const { context, inserted } = stubContext()
+  const dispose = mod.apply(context)
+
+  select(window, 'user-line')
+  const bar = document.querySelector(`.${BAR_CLASS}`)
+  assert.ok(bar !== null, 'precondition: the box is up')
+
+  // A real press: the plugin listens for mousedown (capture), the glue for pointerdown.
+  for (const type of ['pointerdown', 'mousedown'])
+    bar.dispatchEvent(new window.Event(type, { bubbles: true, cancelable: true }))
+  for (const type of ['pointerup', 'mouseup'])
+    bar.dispatchEvent(new window.Event(type, { bubbles: true, cancelable: true }))
+  await wait(60)
+
+  document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
+  await wait(60)
+  assert.equal(inserted.length, 1, 'the excerpt must survive a press inside the box')
+  assert.equal(document.getElementById(QUOTE_NOTICE_ID)?.textContent ?? '', '', 'with no failure notice')
+
+  dispose()
+  window.close()
+})
+
+test('a transcript re-render must not discard the excerpt', async () => {
+  // While an answer streams the transcript re-renders under a live selection: the
+  // range can go empty or unmeasurable. The annotation box stays up (it only returns
+  // on an unusable selection), and the quote plugin used to drop the excerpt right
+  // there — so pressing 引用 failed with "excerpt saved; select the original text".
+  const { window, document, mod } = boot()
+  const { context, inserted } = stubContext()
+  const dispose = mod.apply(context)
+
+  select(window, 'user-line')
+  assert.ok(document.querySelector(`.${BAR_CLASS}`) !== null, 'precondition: the box is up')
+
+  // The stream re-renders the row the selection lives in.
+  document.getElementById('user-line').textContent = ''
+  document.dispatchEvent(new window.Event('selectionchange'))
+  await wait(60)
+  assert.ok(document.querySelector(`.${BAR_CLASS}`) !== null, 'the box is still up')
+
+  document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
+  await wait(60)
+  assert.equal(inserted.length, 1, '引用 must still insert the excerpt the person selected')
+  assert.equal(document.getElementById(QUOTE_NOTICE_ID)?.textContent ?? '', '', 'with no failure notice')
+
+  dispose()
+  window.close()
+})
+
 test('a press that cannot insert must say so and keep the box open', async () => {
   // Deterministic failure path: the composer is gone, so the quote plugin cannot
   // insert and reports it. The glue must not close the box over a failed press.

@@ -105,9 +105,15 @@ that symbol name.
 - **Known behaviour**: 批注 replaces the box with the editor card; 引用 inserts and
   **closes the box too** (both actions behave alike). Losing the selection or
   clicking outside closes the whole box, and the standalone button comes back.
-- **Failures are loud**: if quote cannot insert (the pending excerpt was dropped by
-  a scroll, no composer, a locked composer) the upstream plugin shows the reason and
-  **the box stays open** for a retry — never "nothing happened and the box vanished".
+- **Failures are loud**: if quote cannot insert (no composer, a locked composer, or an
+  excerpt that really is gone) the upstream plugin shows the reason and **the box stays
+  open** for a retry — never "nothing happened and the box vanished".
+- **The excerpt cannot go missing while the box is up**: upstream drops its pending
+  excerpt whenever the selection cannot be resolved (empty text, unmeasurable rect —
+  what a transcript re-render during streaming looks like) or on **any scroll**, while
+  the annotation box stays up — so pressing 引用 hit "excerpt saved; select the original
+  text to retry". Patched: **while the merged toolbar is in charge, neither drops the
+  excerpt**. Escape, outside presses and scrolls in standalone mode keep their meaning.
 - **The editor card also hides the standalone button**, so it cannot pop up over an
   open card.
 - **Cost**: the toolbar is **event-driven** — `selectionchange` sets the marker in

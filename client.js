@@ -2930,7 +2930,7 @@ window.__ModuleLoader__.load({
 
 		//#region vendored: dsh-quote-followup v0.2.10 (MIT, Copyright (c) 2026 tr1v3r)
 		// Inlined verbatim from https://github.com/tr1v3r/dsh-quote-followup — see THIRD_PARTY_NOTICES.md.
-		// Fork deviations applied at build time: mousedown-tolerates-merged-trigger, fail-loud-without-excerpt (see patches/).
+		// Fork deviations applied at build time: mousedown-tolerates-merged-trigger, fail-loud-without-excerpt, keep-excerpt-across-scroll, keep-excerpt-while-toolbar-holds (see patches/).
 		// Body kept at column 0 so it stays byte-identical to the vendored file up to those deviations (asserted by test/vendor.test.mjs).
 		const vendoredQuote = ((require) => {
 var module = { exports: {} };
@@ -3488,20 +3488,33 @@ var module = { exports: {} };
 		};
 		const onSelectionChange = () => {
 			const selection = document.getSelection();
+			// FORK DEVIATION (dsh-selection-group): while the merged toolbar is in charge
+			// (its marker is set) a selection that momentarily cannot be resolved — the
+			// transcript re-renders under a live selection while an answer streams, leaving
+			// the range empty or unmeasurable — must NOT discard the pending excerpt. The
+			// excerpt is the text the person asked to quote, and 引用 inserts that text, so
+			// dropping it produced the plugin own "excerpt saved; select the original text
+			// to retry" notice on a press that should have worked.
+			// Escape, an outside press and a scroll keep their upstream meaning, and once the
+			// merged box is gone the marker is cleared and this guard stops applying.
+			const keepExcerptForMergedToolbar = document.documentElement.hasAttribute("data-dsh-selection-group-bar");
 			const transcript = selectionInTranscript(selection);
 			if (transcript === null) {
-				dismissQuote();
+				if (!keepExcerptForMergedToolbar)
+					dismissQuote();
 				return;
 			}
 			const text = selection.toString();
 			if (text === null || text.trim() === "") {
-				dismissQuote();
+				if (!keepExcerptForMergedToolbar)
+					dismissQuote();
 				return;
 			}
 			const range = selection.getRangeAt(0);
 			const rect = range.getBoundingClientRect();
 			if (rect.width === 0 && rect.height === 0) {
-				dismissQuote();
+				if (!keepExcerptForMergedToolbar)
+					dismissQuote();
 				return;
 			}
 			const startRow = messageRowOf(range.startContainer, transcript);
@@ -3610,14 +3623,36 @@ var module = { exports: {} };
 			} catch (error) {
 				console.warn("[dsh-quote-followup] native reference codec unavailable; using text fallback", error);
 			}
-			const onScroll = () => dismissQuote();
+			const onScroll = () => {
+				// FORK DEVIATION (dsh-selection-group): while the merged toolbar holds the
+				// interaction (its box is up, the pointer is down, or the selection is still
+				// fresh) a scroll must NOT discard the pending excerpt. The transcript
+				// auto-scrolls while an answer streams, and dropping the excerpt there made
+				// 引用 fail with "excerpt saved; select the original text to retry".
+				// Standalone behaviour is unchanged: with no merged toolbar in charge, the
+				// floating button would otherwise sit at a stale position after a scroll.
+				if (typeof document !== "undefined" && document.documentElement !== null
+					&& document.documentElement.hasAttribute("data-dsh-selection-group-bar"))
+					return;
+				dismissQuote();
+			};
 			const onKeyDown = (event) => {
 				if (event.key === "Escape")
 					dismissQuote();
 			};
-			const onMouseDown = (event) => {
-				if (event.target instanceof Element && event.target.id !== BUTTON_ID
-					&& !(typeof event.target.closest === "function" && event.target.closest("[data-dsh-selection-group-action]") !== null))
+						const onMouseDown = (event) => {
+				// FORK DEVIATION (dsh-selection-group): the merged toolbar renders the 引用
+				// action inside the annotation host, so a press anywhere in that box — the
+				// action, the box background, or the 批注 button — must keep the pending
+				// excerpt. Pressing 引用 after touching the box otherwise failed with
+				// "excerpt saved; select the original text to retry". Presses outside the
+				// box still dismiss, exactly as upstream intends.
+				const inMergedToolbar = event.target instanceof Element
+					&& (event.target.id === BUTTON_ID
+						|| (typeof event.target.closest === "function"
+							&& (event.target.closest("[data-dsh-selection-group-action]") !== null
+								|| event.target.closest("[data-annotation-for-dsh]") !== null)));
+				if (!inMergedToolbar)
 					dismissQuote();
 			};
 			let disposed = false;
@@ -3694,7 +3729,7 @@ var module = { exports: {} };
 		 */
 
 		//#region constants
-		const CLIENT_VERSION = "1.3.4";
+		const CLIENT_VERSION = "1.3.5";
 		const STYLE_ID = "dsh-selection-group-style";
 		const MARKER_ATTR = "data-dsh-selection-group";
 		const HIDE_ATTR = "data-dsh-selection-group-bar";

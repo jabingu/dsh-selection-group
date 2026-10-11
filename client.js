@@ -3729,7 +3729,7 @@ var module = { exports: {} };
 		 */
 
 		//#region constants
-		const CLIENT_VERSION = "1.3.7";
+		const CLIENT_VERSION = "1.3.8";
 		const STYLE_ID = "dsh-selection-group-style";
 		const MARKER_ATTR = "data-dsh-selection-group";
 		const HIDE_ATTR = "data-dsh-selection-group-bar";
@@ -3766,6 +3766,22 @@ var module = { exports: {} };
 		 */
 		const DIAGNOSTICS_TTL_MS = 3 * 60 * 1000;
 		const DIAGNOSTICS_STORAGE_KEY = "dsh-selection-group.diagnostics";
+		/**
+		 * Let a leaked timer keep the page alive? Never.
+		 *
+		 * Browsers have no `unref`, so this is a no-op there; where it does exist it means a
+		 * timer that outlived an unmounted plugin cannot hold the whole process open (which
+		 * turned a failing test into a hung CI job instead of a red one).
+		 */
+		function unrefTimer(timer) {
+			try {
+				if (timer !== null && timer !== undefined && typeof timer.unref === "function")
+					timer.unref();
+			}
+			catch (_) { /* nothing to do */ }
+			return timer;
+		}
+
 		/**
 		 * The toolbar is event-driven: `selectionchange` paints the marker in its own
 		 * turn, a MutationObserver follows the box appearing/disappearing, and a one-shot
@@ -3898,7 +3914,7 @@ var module = { exports: {} };
 			if (persistTimer !== null)
 				return;
 			try {
-				persistTimer = setTimeout(() => {
+				persistTimer = unrefTimer(setTimeout(() => {
 					persistTimer = null;
 					try {
 						if (diagnosticsMode === "expired")
@@ -3917,7 +3933,7 @@ var module = { exports: {} };
 						writeSnapshot(diagnostics);
 					}
 					catch (_) { /* private mode or a full quota must never break the bundle */ }
-				}, 250);
+				}, 250));
 			}
 			catch (_) { /* no timers available: skip persistence */ }
 		}
@@ -3996,13 +4012,13 @@ var module = { exports: {} };
 					return;
 				const deadline = Date.now() + ttl;
 				window[DIAGNOSTICS_DEADLINE_KEY] = deadline;
-				window[DIAGNOSTICS_TIMER_KEY] = setTimeout(() => {
+				window[DIAGNOSTICS_TIMER_KEY] = unrefTimer(setTimeout(() => {
 					try {
 						delete window[DIAGNOSTICS_TIMER_KEY];
 					}
 					catch (_) { /* already gone */ }
 					diagnosticsAllowed();
-				}, ttl);
+				}, ttl));
 			}
 			catch (_) { /* without timers the deadline check still expires them */ }
 		}
@@ -4455,13 +4471,13 @@ var module = { exports: {} };
 			}
 			catch (_) { /* no timers: the safety interval still re-evaluates */ }
 			try {
-				graceTimer = setTimeout(() => {
+				graceTimer = unrefTimer(setTimeout(() => {
 					graceTimer = null;
 					try {
 						refreshMarker();
 					}
 					catch (_) { /* diagnostics only */ }
-				}, GRACE_MS);
+				}, GRACE_MS));
 			}
 			catch (_) {
 				graceTimer = null;
@@ -4601,7 +4617,7 @@ var module = { exports: {} };
 			document.addEventListener("mouseup", onPointerUp, true);
 			let interval = null;
 			try {
-				interval = setInterval(() => heartbeat(layer), TICK_MS);
+				interval = unrefTimer(setInterval(() => heartbeat(layer), TICK_MS));
 			}
 			catch (_) { /* without timers the toolbar still works; only the marker sleeps */ }
 			heartbeat(layer);

@@ -7,7 +7,7 @@
  * stays untouched upstream code. No DOM is moved, no container exists.
  */
 
-import { test } from 'node:test'
+import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -33,9 +33,25 @@ const STYLE_ID = 'dsh-selection-group-style'
 const BAR_CLASS = 'dsh-ann-bar'
 const QUOTE_NOTICE_ID = 'dsh-quote-followup-notice'
 
+/**
+ * Every window a test opens, so `afterEach` can close it even when an assertion
+ * throws: a leaked jsdom window keeps the test process alive, which turned a red
+ * test into a hung CI job.
+ */
+const openWindows = []
+afterEach(() => {
+  for (const window of openWindows.splice(0)) {
+    try {
+      window.close()
+    }
+    catch (_) { /* already closed */ }
+  }
+})
+
 function boot(html = HTML) {
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost/' })
   const { window } = dom
+  openWindows.push(window)
   let mod = null
   window.__ModuleLoader__ = {
     load: (registration) => {

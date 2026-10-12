@@ -22,6 +22,10 @@
   两个尺寸完全相同，报告会变成"漂移了但看起来一模一样"。
 - `build.mjs` 读取构建输入失败时，现在抛出**指名的诊断**（哪个文件、哪个目录该带上），而不是深层 ENOENT。
 - `.gitignore` 忽略 `*.tgz`（本地打包验证用，不提交）。
+- **分发方式定为 GitHub**：README 的安装节改成三种来源——`github:` 仓库 URL（推荐）、
+  GitHub Release 的 tarball 直链（钉版本）、clone + `link:`（开发），并写明**本项目不通过 npm
+  registry 分发**。三者在 pnpm 11.7.0 下均已实测：`github:` 装出的 `client.js` 与仓库里的
+  sha256 完全一致，且在该包内 `node scripts/build.mjs --check` 与 69 项测试全部通过。
 
 ## [1.6.3]
 

@@ -81,40 +81,46 @@
 
 ## 安装 / 升级
 
-包名与安装槽没变（desktop profile 里以 `link:` 安装且已在 `dsh.profile.bundles` 中启用），所以：
+装好后在插件面板里显示为 **Selection Toolbar**。三种来源，按推荐顺序：
 
-1. **完全退出 DeepSeek Harness（`Cmd+Q`）再打开**。
+```sh
+# ① 推荐：直接给 GitHub 仓库 URL（跟随 main）
+dsh plugin --profile desktop add "github:jabingu/dsh-selection-group"
+
+# ② 钉住版本：GitHub Release 的 tarball 直链（v1.6.4 起提供）
+dsh plugin --profile desktop add \
+  "https://github.com/jabingu/dsh-selection-group/releases/download/v1.6.4/dsh-selection-group-1.6.4.tgz"
+
+# ③ 开发用：clone 后按本地路径装（改代码立即生效）
+git clone https://github.com/jabingu/dsh-selection-group.git
+dsh plugin --profile desktop add "link:$PWD/dsh-selection-group"
+```
+
+`dsh` 不在 PATH 里时用全路径：
+`"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"`。
+
+| | ① `github:` 仓库 | ② Release tarball | ③ clone + `link:` |
+|---|---|---|---|
+| 拿到什么 | 仓库快照，**含已构建的 `client.js`** | 构建好的发布物 | 你的工作副本 |
+| 版本 | 跟随默认分支当时的 HEAD | 钉死在标签版本 | 本地怎么改就怎么算 |
+| 能自证 | ✅ | ✅ | ✅ |
+| 能改代码 | ❌ | ❌ | ✅ |
+| 升级 | 重跑 `add` | 换新版本 URL | `git pull` |
+
+三种来源都**自带全部构建输入**（`src/`、`vendor/`、`patches/`、`scripts/`、`test/`），装完可以在包目录里自查：
+
+```sh
+node scripts/build.mjs --check    # client.js 是否与 vendor/ + src/ 一致（只校验、不重写）
+node --test test/*.test.mjs       # 69 项：含 vendor sha256 校验与"每条补丁是否落进产物"的断言
+```
+
+> **没有 npm 包**：这个插件**不通过 npm registry 分发**（它不是靠 `prepare` 脚本在安装时构建的，
+> 直接发 npm 还需要额外处理构建产物）。上面三种来源交付的都是同一份、可自证的产物。
+
+### 装完必做
+
+1. **完全退出 DeepSeek Harness（`Cmd+Q`）再打开**——客户端 bundle 是启动时装配的，不重启不会生效。
 2. `dsh-quote-followup`、`@changfenhuang/dsh-annotation` **继续保持停用或直接卸载**。⚠️ 不要重新启用：内联副本与上游使用相同的元素 id（`dsh-quote-followup-btn`），同时存在会互相抢 DOM。
-
-安装后在插件面板里显示为 **Selection Toolbar**。
-
-从零安装（新机器）：
-
-```
-设置 → 插件 → 安装，粘贴本仓库的绝对路径（示例）：
-~/path/to/dsh-selection-group
-```
-
-或：
-
-```sh
-"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add \
-  "link:$PWD"          # 在仓库根目录执行
-```
-
-### 从 npm 安装（发布包）
-
-发布包**自带全部构建输入**（`src/`、`vendor/`、`patches/`、`scripts/`、`test/`），所以装下去就能自查：
-
-```sh
-npm install dsh-selection-group          # 装好即可用：client.js 是已套好补丁的产物
-cd node_modules/dsh-selection-group
-npm test                                 # 69 项 + vendor sha256 校验 + client.js 漂移检查
-```
-
-`npm test` 跑的是 `node scripts/build.mjs --check`（**只校验、不重写**——否则测试流程会先把产物"修好"再去断言它）
-再加全部用例；`client.js` 与 `vendor/ + src/` 有任何漂移都会以退出码 1 失败并打印两边的行数/字节数。
 
 ## 结构
 

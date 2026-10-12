@@ -37,44 +37,53 @@ all**, rather than being a dead control.
 
 ## Install
 
-The plugins panel lists it as **Selection Toolbar**.
-
-From the harness:
-
-```
-Settings → Plugins → Install, and paste the absolute path of this checkout:
-~/path/to/dsh-selection-group
-```
-
-or from the CLI (`link:` keeps edits in place, so a `git pull` plus a restart is
-enough to upgrade):
+The plugins panel lists it as **Selection Toolbar**. Three sources, in the order I
+recommend them:
 
 ```sh
-"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add \
-  "link:$PWD"          # run this in the repository root
+# (1) recommended: the GitHub repository URL (follows main)
+dsh plugin --profile desktop add "github:jabingu/dsh-selection-group"
+
+# (2) pin a version: the GitHub Release tarball (published from v1.6.4 on)
+dsh plugin --profile desktop add \
+  "https://github.com/jabingu/dsh-selection-group/releases/download/v1.6.4/dsh-selection-group-1.6.4.tgz"
+
+# (3) for development: clone and install from the path (edits apply immediately)
+git clone https://github.com/jabingu/dsh-selection-group.git
+dsh plugin --profile desktop add "link:$PWD/dsh-selection-group"
 ```
 
-### Installing from npm (the published tarball)
+If `dsh` is not on your PATH, use the full one:
+`"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"`.
 
-The published package **carries every build input** (`src/`, `vendor/`, `patches/`,
-`scripts/`, `test/`), so an install can verify itself:
+| | (1) `github:` repo | (2) release tarball | (3) clone + `link:` |
+|---|---|---|---|
+| What you get | a repo snapshot, **including the built `client.js`** | the built artifact | your working copy |
+| Version | whatever the default branch was at install time | pinned to the tag | whatever you have |
+| Self-verifiable | ✅ | ✅ | ✅ |
+| Editable | ❌ | ❌ | ✅ |
+| Upgrade | re-run `add` | a new version URL | `git pull` |
+
+All three **carry every build input** (`src/`, `vendor/`, `patches/`, `scripts/`,
+`test/`), so an install can check itself:
 
 ```sh
-npm install dsh-selection-group          # ready to use: client.js is the patched artifact
-cd node_modules/dsh-selection-group
-npm test                                 # 69 tests + vendor sha256 pins + a client.js drift check
+node scripts/build.mjs --check    # is client.js what vendor/ + src/ produce? (verify only)
+node --test test/*.test.mjs       # 69 tests, incl. the vendor sha256 pins
 ```
 
-`npm test` runs `node scripts/build.mjs --check` (**verify only, never rewrite** — otherwise
-the test step could "repair" the artifact it is about to assert on) and then the whole
-suite; any drift between `client.js` and `vendor/ + src/` exits 1 and prints both sizes.
+> **There is no npm package.** This plugin is **not distributed through the npm
+> registry** (it is not built by a `prepare` script at install time, and publishing
+> it there would need extra artifact handling). All three sources above deliver the
+> same self-verifiable artifact.
 
-Then **quit DeepSeek Harness completely (`Cmd+Q`) and open it again**.
+### After installing
 
-> ⚠️ Keep `dsh-quote-followup` and `@changfenhuang/dsh-annotation` **disabled or
-> uninstalled**. The inlined copies use the same element ids as upstream
-> (`dsh-quote-followup-btn`), so enabling both would fight over the DOM.
+1. **Quit DeepSeek Harness completely (`Cmd+Q`) and open it again** — the client
+   bundle is assembled at startup, so nothing changes without a restart.
+2. Keep `dsh-quote-followup` and `@changfenhuang/dsh-annotation` **disabled or
+   uninstalled**. The inlined copies use the same element ids as upstream
+   (`dsh-quote-followup-btn`), so enabling both would fight over the DOM.
 
 ## Architecture — one box with injected actions, not boxes relocated
 

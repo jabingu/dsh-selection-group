@@ -55,6 +55,21 @@ enough to upgrade):
   "link:$PWD"          # run this in the repository root
 ```
 
+### Installing from npm (the published tarball)
+
+The published package **carries every build input** (`src/`, `vendor/`, `patches/`,
+`scripts/`, `test/`), so an install can verify itself:
+
+```sh
+npm install dsh-selection-group          # ready to use: client.js is the patched artifact
+cd node_modules/dsh-selection-group
+npm test                                 # 69 tests + vendor sha256 pins + a client.js drift check
+```
+
+`npm test` runs `node scripts/build.mjs --check` (**verify only, never rewrite** — otherwise
+the test step could "repair" the artifact it is about to assert on) and then the whole
+suite; any drift between `client.js` and `vendor/ + src/` exits 1 and prints both sizes.
+
 Then **quit DeepSeek Harness completely (`Cmd+Q`) and open it again**.
 
 > ⚠️ Keep `dsh-quote-followup` and `@changfenhuang/dsh-annotation` **disabled or

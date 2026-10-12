@@ -1,6 +1,6 @@
 {
   "name": "dsh-selection-group",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "Selection Toolbar (dsh-selection-group): one self-contained DSH selection toolbar — a single hover box offering annotate, quote and side chat, with neither upstream plugin installed.",
   "icon": "./icon.svg",
   "type": "module",
@@ -19,6 +19,13 @@
     "cordis.patch.yml",
     "icon.svg",
     "locale/*.json",
+    "src",
+    "scripts/build.mjs",
+    "patches/*.json",
+    "vendor/*.js",
+    "vendor/manifest.json",
+    "vendor/LICENSE.*",
+    "test",
     "README.md",
     "README.en.md",
     "CHANGELOG.md",
@@ -41,8 +48,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && node --test test/*.test.mjs",
-    "verify": "node --test test/*.test.mjs"
+    "test": "node scripts/build.mjs --check && node --test test/*.test.mjs",
+    "verify": "node scripts/build.mjs --check && node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=20"

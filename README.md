@@ -103,6 +103,19 @@
   "link:$PWD"          # 在仓库根目录执行
 ```
 
+### 从 npm 安装（发布包）
+
+发布包**自带全部构建输入**（`src/`、`vendor/`、`patches/`、`scripts/`、`test/`），所以装下去就能自查：
+
+```sh
+npm install dsh-selection-group          # 装好即可用：client.js 是已套好补丁的产物
+cd node_modules/dsh-selection-group
+npm test                                 # 69 项 + vendor sha256 校验 + client.js 漂移检查
+```
+
+`npm test` 跑的是 `node scripts/build.mjs --check`（**只校验、不重写**——否则测试流程会先把产物"修好"再去断言它）
+再加全部用例；`client.js` 与 `vendor/ + src/` 有任何漂移都会以退出码 1 失败并打印两边的行数/字节数。
+
 ## 结构
 
 | 路径 | 说明 |

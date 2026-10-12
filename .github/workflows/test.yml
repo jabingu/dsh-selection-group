@@ -25,7 +25,8 @@ jobs:
       # inside the npm wrapper's process tree while the same code passed on the other
       # matrix leg (24 s) and repeated local runs, so the wrapper is the suspect.
       # The spec reporter names the test a stall stops on.
-      # The build step also fails when the committed client.js drifted from
-      # vendor/ + src/, so a stale bundle can never be released.
-      - run: node scripts/build.mjs
+      # `--check` verifies the committed client.js against vendor/ + src/ WITHOUT
+      # rewriting it, so the artifact under test can never be repaired by the step
+      # that is about to assert on it; drift fails with exit 1.
+      - run: node scripts/build.mjs --check
       - run: node --test --test-reporter=spec test/*.test.mjs

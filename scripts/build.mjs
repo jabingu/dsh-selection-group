@@ -97,10 +97,29 @@ const indented = (text, depth) => text
   .join('\n')
 
 //#region integrity + extraction
+/**
+ * Read one build INPUT with a diagnosis that names the file and the directory,
+ * instead of a bare ENOENT from deep inside the pipeline. These inputs travel in
+ * the published package (`files` in package.json) precisely so a consumer can
+ * rebuild and verify the bundle — an install that cannot is the failure this
+ * message is here to prevent.
+ */
+function readInput(relative) {
+  try {
+    return read(relative)
+  } catch (cause) {
+    throw new Error(
+      `build input missing: ${relative} — the file is unreadable (${String(cause?.code ?? cause)}). ` +
+      `A source checkout or the published tarball must carry vendor/, patches/ and scripts/; ` +
+      `if this copy came from somewhere else, reinstall from npm or clone the repository.`,
+    )
+  }
+}
+
 const extracted = PLAN.map((plan) => {
   const meta = vendors[plan.name]
   if (meta === undefined) throw new Error(`vendor/manifest.json has no entry for ${plan.name}`)
-  const source = read(join('vendor', meta.file))
+  const source = readInput(join('vendor', meta.file))
   const actual = sha256(source)
   if (actual !== meta.sha256)
     throw new Error(`vendor/${meta.file} does not match the pinned sha256 (expected ${meta.sha256}, got ${actual})`)
@@ -261,6 +280,46 @@ ${indented(glue, 2)}
 
 // Parse-only check of the whole bundle (does not execute it).
 new Function(client)
+
+/**
+ * `--check`: verify the committed `client.js` instead of rewriting it.
+ *
+ * Two callers need exactly this. The test suite uses it so a run can never
+ * "repair" the artifact it is about to assert on — drift must fail, not be
+ * laundered. And a consumer holding the published tarball can verify the shipped
+ * bundle without rewriting a file inside node_modules.
+ */
+const isCheck = process.argv.includes('--check')
+if (isCheck) {
+  const committed = existsSync(join(root, 'client.js')) ? read('client.js') : null
+  if (committed === client) {
+    console.log(`client.js is up to date with vendor/ + src/ at v${packageManifest.version} (${client.split('\n').length} lines, ${Buffer.byteLength(client)} bytes)`)
+    process.exit(0)
+  }
+  // Sizes alone can match while the bytes differ (a version bump changes one
+  // character), so name the first difference — otherwise the report reads as
+  // "drifted, but the two look identical".
+  const firstDiff = (() => {
+    if (committed === null) return 'client.js is missing'
+    const limit = Math.min(committed.length, client.length)
+    for (let at = 0; at < limit; at += 1) {
+      if (committed[at] !== client[at]) {
+        const line = committed.slice(0, at).split('\n').length
+        return `first difference at line ${line}, character ${at}: committed ${JSON.stringify(committed.slice(at, at + 24))} vs rebuilt ${JSON.stringify(client.slice(at, at + 24))}`
+      }
+    }
+    return `the first ${limit} characters match; one file is longer than the other`
+  })()
+  console.error([
+    `client.js has DRIFTED from vendor/ + src/ at v${packageManifest.version} — the committed bundle is not what this build produces.`,
+    `  committed: ${committed === null ? 'missing' : `${committed.split('\n').length} lines, ${Buffer.byteLength(committed)} bytes`}`,
+    `  rebuilt  : ${client.split('\n').length} lines, ${Buffer.byteLength(client)} bytes`,
+    `  ${firstDiff}`,
+    'Run `npm run build` and commit the result.',
+  ].join('\n'))
+  process.exit(1)
+}
+
 writeFileSync(join(root, 'client.js'), client)
 
 console.log([

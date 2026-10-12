@@ -3748,7 +3748,7 @@ var module = { exports: {} };
 		 */
 
 		//#region constants
-		const CLIENT_VERSION = "1.6.3";
+		const CLIENT_VERSION = "1.6.4";
 		const STYLE_ID = "dsh-selection-group-style";
 		const MARKER_ATTR = "data-dsh-selection-group";
 		const HIDE_ATTR = "data-dsh-selection-group-bar";

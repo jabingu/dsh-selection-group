@@ -45,3 +45,26 @@ test('the glue only ever hides the standalone button — it never moves DOM', ()
   assert.match(glue, /HIDE_ATTR = "data-dsh-selection-group-bar"/)
   assert.match(glue, /data-dsh-selection-group-action/, 'the attribute the patched button carries')
 })
+
+test('every constant the glue references is declared in the glue', () => {
+  // A browser bundle has no build-time symbol check: a constant that survives a
+  // refactor only as a reference is a ReferenceError at the moment the person
+  // presses the button, on their machine (measured — SIDECHAT_DRAFT_POLL_MS).
+  // Declarations and uses are both lexically visible here, so the drift is
+  // catchable before the bundle ships. Only this file is scanned: the generated
+  // bundle also inlines both vendored plugins verbatim, whose own globals are not
+  // ours to declare.
+  const glue = read('src/toolbar.js')
+  const used = new Set(glue.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) ?? [])
+  const declared = new Set(
+    [...glue.matchAll(/\b(?:const|let|var|function)\s+([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b/g)].map((match) => match[1]),
+  )
+  // Two exemptions, both named rather than pattern-widened:
+  //   - GROUP_VERSION is mentioned in the module doc as "the build substitutes
+  //     this"; the real identifiers are CLIENT_VERSION and MARKER_ATTR.
+  //   - Number.POSITIVE_INFINITY is a language built-in that happens to match the
+  //     naming pattern (the bounded-distance search uses it as "no candidate yet").
+  const notGlueConstants = new Set(['GROUP_VERSION', 'POSITIVE_INFINITY'])
+  const undeclared = [...used].filter((name) => !declared.has(name) && !notGlueConstants.has(name))
+  assert.deepEqual(undeclared, [], `the glue references constants it never declares: ${undeclared.join(', ')}`)
+})

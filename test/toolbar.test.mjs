@@ -74,11 +74,20 @@ function boot(html = HTML) {
  * ones: in particular the session facade quote-followup inserts a native
  * reference chip through (`conversation.input.for(scope)` + `insertReference`),
  * so the 引用 action can be asserted end to end.
+ *
+ * `betterSidebar` is the neighbour service the 侧边对话 action gates on (its
+ * absence is a case of its own); `fetch` is the route the action posts to, since
+ * the thread has to be created before its tab can be opened.
+ *
+ * @param options - `{ sidebar }`: `false` leaves the service unregistered,
+ * `'broken'` registers one whose `openTab` throws, an object overrides it.
  */
 function stubContext(options = {}) {
   const noop = () => {}
   const unsubscribe = () => {}
   const inserted = []
+  const openedTabs = []
+  const requests = []
   const inputApi = {
     state: { getSnapshot: () => ({ draft: '', draftRev: 0, phase: 'plain', occurrences: [] }) },
     insertText: () => true,
@@ -96,6 +105,15 @@ function stubContext(options = {}) {
     scope: (id) => ({ key: id, get: (name) => (name === 'conversation' ? { input: { for: () => inputApi } } : null) }),
     current: 'session-test',
   }
+  const sidebar = options.sidebar === undefined
+    ? {
+      version: '0.25.0',
+      features: ['tabLifecycle'],
+      getSnapshot: () => ({ sessionId: 'session-test' }),
+      openTab: (seed, scope) => { openedTabs.push({ seed, scope }) },
+      registerTab: () => unsubscribe,
+    }
+    : options.sidebar
   /** Cleanups a real fiber effect would hold on to (cordis runs the callback now). */
   const cleanups = []
   const context = {
@@ -110,6 +128,8 @@ function stubContext(options = {}) {
         return { registerSource: () => unsubscribe }
       if (name === 'uiSession')
         return { adapter: { current: { getSnapshot: () => ({ key: 'session-test' }) } } }
+      if (name === 'betterSidebar')
+        return sidebar
       return null
     },
     // Real cordis semantics: the callback runs immediately and its RETURN VALUE is
@@ -122,7 +142,32 @@ function stubContext(options = {}) {
       return cleanup
     },
   }
-  return { context, inserted, cleanups }
+  return { context, inserted, openedTabs, requests, cleanups }
+}
+
+/**
+ * Replace the window's fetch with a recorded stub. The 侧边对话 action owns its
+ * own wire call, so the assertions are about the request it sends and what it
+ * does with each answer.
+ *
+ * @param window - the jsdom window under test.
+ * @param reply - the answer: `{ childId }` for a success envelope, an
+ * `Error` to reject the request, an object for a raw envelope, or a function
+ * receiving the parsed request body.
+ */
+function stubFetch(window, reply) {
+  const calls = []
+  window.fetch = (url, init) => {
+    const body = init !== undefined && typeof init.body === 'string' ? JSON.parse(init.body) : null
+    calls.push({ url: String(url), init, body })
+    const answer = typeof reply === 'function' ? reply(body) : reply
+    if (answer instanceof Error)
+      return Promise.reject(answer)
+    if (answer !== undefined && answer.ok === undefined)
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, value: answer }) })
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(answer) })
+  }
+  return calls
 }
 
 /** Put a real DOM selection over the text of `#id` and let the plugins react. */
@@ -177,17 +222,20 @@ test('registering the fiber effect must not dispose the plugin (cordis runs it n
   window.close()
 })
 
-test('the glue publishes one action and hides only the standalone quote button', () => {
+test('the glue publishes its actions and hides only the standalone quote button', () => {
   const { window, document, mod } = boot()
   const dispose = mod.__toolbar(stubContext().context)
 
   const actions = window.__DSH_SELECTION_GROUP_ACTIONS__
   assert.equal(typeof actions, 'function', 'the patched toolbar reads its actions from this hook')
   const list = actions()
-  assert.equal(list.length, 1, 'one extra action: 引用')
+  assert.equal(list.length, 2, '引用 plus 侧边对话 while the sidebar service is present')
   assert.equal(list[0].id, 'quote')
   assert.match(list[0].label, /引用/)
   assert.equal(typeof list[0].run, 'function')
+  assert.equal(list[1].id, 'sidechat')
+  assert.match(list[1].label, /侧边对话/)
+  assert.equal(typeof list[1].run, 'function')
 
   const css = document.getElementById(STYLE_ID).textContent
   assert.match(css, new RegExp(`html\\[${HIDE_ATTR}\\] #${QUOTE_ID}`), 'the standalone button is hidden only under the marker')
@@ -200,7 +248,48 @@ test('the glue publishes one action and hides only the standalone quote button',
   window.close()
 })
 
-test('the one hover box carries both actions after a selection', async () => {
+test('without the sidebar service the hook publishes 引用 alone', () => {
+  // `dsh-better-sidebar` is a neighbour, not a dependency: on a profile without
+  // it the toolbar keeps its two upstream actions instead of offering a button
+  // that cannot work. The service can also register AFTER this bundle mounts, so
+  // the list is rebuilt on every render rather than decided once at mount.
+  const { window, mod } = boot()
+  const { context } = stubContext({ sidebar: false })
+  const live = mod.__toolbar(context)
+  const idsOf = () => window.__DSH_SELECTION_GROUP_ACTIONS__().map((action) => action.id).join(',')
+
+  assert.equal(idsOf(), 'quote', 'no sidebar service, no 侧边对话 button')
+
+  // The service registers later (the neighbour plugin mounts after this one).
+  context.get = (name) => (name === 'betterSidebar' ? { version: '0.25.0', openTab: () => {} } : null)
+  assert.equal(idsOf(), 'quote,sidechat', 'the next render picks the service up')
+
+  live()
+  window.close()
+})
+
+test('a sidebar service that registers after mount is picked up by the heartbeat', async () => {
+  // Realistic order: this bundle mounts, the neighbour's client half provides
+  // `betterSidebar` a moment later. Without the heartbeat republishing the action
+  // list, a selection made in that window would offer two buttons until the next
+  // selection; here the toolbar must grow its third action on its own.
+  const { window, document, mod } = boot()
+  const context = stubContext({ sidebar: false }).context
+  const dispose = mod.apply(context)
+
+  assert.equal(window.__DSH_SELECTION_GROUP_ACTIONS__().length, 1, 'only 引用 before the neighbour exists')
+  assert.equal(document.querySelectorAll(`[${ACTION_ATTR}="sidechat"]`).length, 0, 'no 侧边对话 button before the neighbour exists')
+  assert.equal(window.__DSH_SELECTION_GROUP__.sidechatEnabled, false, 'the probe reports the neighbour as missing')
+
+  context.get = (name) => (name === 'betterSidebar' ? { version: '0.25.0', openTab: () => {} } : null)
+  assert.ok(await waitFor(() => window.__DSH_SELECTION_GROUP__.sidechatEnabled === true), 'the heartbeat notices the registered service')
+  assert.ok(await waitFor(() => window.__DSH_SELECTION_GROUP_ACTIONS__().length === 2), 'and republishes the actions carrying it')
+
+  dispose()
+  window.close()
+})
+
+test('the one hover box carries every action after a selection', async () => {
   const { window, document, mod } = boot()
   const { context, inserted } = stubContext()
   const dispose = mod.apply(context)
@@ -212,9 +301,13 @@ test('the one hover box carries both actions after a selection', async () => {
   const extra = bar.querySelector(`[${ACTION_ATTR}="quote"]`)
   assert.ok(extra !== null, 'it renders the injected 引用 action')
   assert.match(extra.textContent, /引用/)
+  const sidechat = bar.querySelector(`[${ACTION_ATTR}="sidechat"]`)
+  assert.ok(sidechat !== null, 'and the injected 侧边对话 action')
+  assert.match(sidechat.textContent, /侧边对话/)
   const annotate = [...bar.querySelectorAll('button')].filter((button) => button.getAttribute(ACTION_ATTR) === null)
   assert.ok(annotate.length >= 1, "the plugin's own 批注 button stays next to it")
   assert.equal(document.querySelectorAll(`[${ACTION_ATTR}="quote"]`).length, 1, 'exactly one 引用 button, never a duplicate')
+  assert.equal(document.querySelectorAll(`[${ACTION_ATTR}="sidechat"]`).length, 1, 'and exactly one 侧边对话 button')
 
   dispose()
   window.close()
@@ -242,6 +335,368 @@ test('pressing 引用 runs dsh-quote-followup\'s own native-insertion path', asy
   dispose()
   window.close()
 })
+
+//#region 侧边对话 (dsh-better-sidebar)
+/**
+ * Press the injected 侧边对话 button of a fresh selection.
+ *
+ * `pollMs` shortens the composer wait through the plugin's own window switch.
+ * The DEFAULT is the production constant on purpose: the failure this guards
+ * against was exactly "the code path without the override is broken", so the
+ * tests that do not need a short wait must exercise the real default.
+ */
+function pressSidechat(window, document, { pollMs } = {}) {
+  if (pollMs !== undefined)
+    window.__DSH_SELECTION_GROUP_SIDECHAT_POLL_MS__ = pollMs
+  select(window, 'user-line')
+  const button = document.querySelector(`[${ACTION_ATTR}="sidechat"]`)
+  assert.ok(button !== null, 'precondition: the 侧边对话 button is rendered')
+  button.click()
+}
+
+/**
+ * Mount a stand-in for the neighbour's Side Chat composer, shaped exactly the
+ * way that plugin builds it: a card whose first child is the send button and
+ * whose last child is the `<textarea>` the draft lives in.
+ *
+ * `tracked` gives the field React 18's own value interception — an OWN `value`
+ * accessor over the prototype's — because that is precisely what makes a plain
+ * `field.value = …` useless and the prototype setter the only way in.
+ */
+function mountSideChatComposer(document, { value = '', tracked = false } = {}) {
+  const window = document.defaultView
+  const card = document.createElement('div')
+  card.className = 'sidechat-composer-stub'
+  const field = document.createElement('textarea')
+  if (tracked) {
+    const prototypeGetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').get
+    const prototypeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    if (value !== '')
+      prototypeSetter.call(field, value)
+    const seen = []
+    field.addEventListener('input', () => {
+      // React re-reads the element through the prototype getter after the event.
+      // A plain `field.value = …` never reaches here, because the tracker's own
+      // accessor still holds the old value.
+      seen.push(prototypeGetter.call(field))
+    })
+    Object.defineProperty(field, 'value', {
+      configurable: true,
+      get: () => prototypeGetter.call(field),
+      set: () => { /* React's tracker: the raw write is swallowed */ },
+    })
+    field.__seen = seen
+  }
+  else {
+    field.value = value
+  }
+  // The neighbour's REAL nesting, which the lookup must survive: the button is NOT
+  // the card's first child — the textarea is, and the button sits one level deeper
+  // inside the bar. A stub with the button first let the wrong heuristic pass once.
+  const bar = document.createElement('div')
+  bar.className = 'sidechat-composer-bar-stub'
+  const meta = document.createElement('span')
+  const send = document.createElement('button')
+  send.type = 'button'
+  send.setAttribute('title', '发送')
+  bar.appendChild(meta)
+  bar.appendChild(send)
+  card.appendChild(field)
+  card.appendChild(bar)
+  document.body.appendChild(card)
+  return field
+}
+
+test('the composer lookup survives the neighbour\'s real nesting and a distractor field', async () => {
+  // The shape that broke the shipped lookup, reproduced exactly: the send button is
+  // the BAR's child (two levels below the card), the card's first child is the
+  // textarea, AND an unrelated editor textarea sits earlier in the document. Four
+  // wrong walks passed a shallower stub and failed here — one of them even wrote the
+  // selection into the unrelated editor. This is the case that must hold.
+  const { window, document, mod } = boot(`<!doctype html><html><head></head><body>
+<div data-slot="conversation.session">
+  <div data-chat-flow-kind="assistant-step" data-chat-turn="2"><p id="user-line">my own question</p></div>
+</div>
+<div data-composer-card><div id="composer" data-composer-input contenteditable="true"></div></div>
+<div id="editor-card"><textarea id="editor">unrelated editor draft</textarea><div><button title="Save"></button></div></div>
+<div class="_4BEzFa_sidechatComposer">
+  <textarea id="sidechat-input" class="_4BEzFa_sidechatComposerInput"></textarea>
+  <div class="_4BEzFa_sidechatComposerBar">
+    <span class="_4BEzFa_sidechatComposerMeta"></span>
+    <button class="_4BEzFa_sidechatSendBtn" title="发送"></button>
+  </div>
+</div>
+</body></html>`)
+  const { context } = stubContext()
+  stubFetch(window, { childId: 'session-side-real' })
+  const dispose = mod.apply(context)
+
+  pressSidechat(window, document)
+  assert.ok(await waitFor(() => window.__DSH_SELECTION_GROUP__.sidechatLast === 'inserted'), 'the text must land')
+
+  assert.equal(document.getElementById('sidechat-input').value, 'my own question', 'the real composer receives the selection')
+  assert.equal(document.getElementById('editor').value, 'unrelated editor draft', 'the unrelated editor is left strictly alone')
+
+  dispose()
+  window.close()
+})
+
+test('a field with no send button near it is never mistaken for the side chat', async () => {
+  // The mirror of the test above: the same nesting but WITHOUT the send button. The
+  // lookup must find nothing (and the action must report that), not fall back to some
+  // textarea that happens to be on the page.
+  const { window, document, mod } = boot(`<!doctype html><html><head></head><body>
+<div data-slot="conversation.session"><div data-chat-flow-kind="assistant-step" data-chat-turn="2"><p id="user-line">my own question</p></div></div>
+<div data-composer-card><div id="composer" data-composer-input contenteditable="true"></div></div>
+<div id="editor-card"><textarea id="editor">unrelated editor draft</textarea><div><button title="Save"></button></div></div>
+<div class="_4BEzFa_sidechatComposer">
+  <textarea id="sidechat-input" class="_4BEzFa_sidechatComposerInput"></textarea>
+  <div class="_4BEzFa_sidechatComposerBar"><span class="_4BEzFa_sidechatComposerMeta"></span></div>
+</div>
+</body></html>`)
+  const { context } = stubContext()
+  stubFetch(window, { childId: 'session-side-nosend' })
+  const dispose = mod.apply(context)
+
+  pressSidechat(window, document, { pollMs: 60 })
+  assert.ok(await waitFor(() => window.__DSH_SELECTION_GROUP__.sidechatLast === 'no-composer'), 'no button means no composer')
+  assert.equal(document.getElementById('sidechat-input').value, '', 'nothing is written into a guessed field')
+  assert.equal(document.getElementById('editor').value, 'unrelated editor draft', 'and the editor is untouched')
+
+  dispose()
+  window.close()
+})
+
+test('pressing 侧边对话 quotes the selection into an EMPTY side chat and sends nothing', async () => {
+  const { window, document, mod } = boot()
+  const { context, openedTabs } = stubContext()
+  const calls = stubFetch(window, { childId: 'session-side-1' })
+  const dispose = mod.apply(context)
+  // The tab's composer is already there (the usual case: `openTab` expands the
+  // workbench and the view mounts before the action's poll gives up).
+  mountSideChatComposer(document)
+
+  pressSidechat(window, document)
+  assert.ok(await waitFor(() => openedTabs.length === 1), 'the action must create the thread and open its tab')
+
+  assert.equal(calls.length, 1, 'exactly one request: the empty-thread create')
+  assert.equal(calls[0].url, 'http://localhost/sidebar/api/sidechat.start', 'the thread is created on the neighbour route, resolved against the page base')
+  assert.equal(calls[0].init.method, 'POST')
+  assert.equal(calls[0].body.sessionId, 'session-test', 'scoped to the conversation the selection lives in')
+  assert.equal(calls[0].body.question, '', 'an EMPTY question: nothing is sent, so this costs no tokens')
+  assert.equal(document.querySelector(`.${BAR_CLASS}`), null, 'the box closes on the way out')
+
+  // The tab is opened for the THREAD THAT WAS CREATED: the neighbour plugin's
+  // descriptor mints its tab without a seed, so its mount reattaches through the
+  // "last thread of this session" key — which has to be written before it opens.
+  // Deep comparison goes through JSON because these objects are built inside the
+  // jsdom realm, and Node's deepStrictEqual refuses a foreign prototype.
+  assert.equal(JSON.stringify(openedTabs[0].seed), JSON.stringify({ type: 'sidechat' }))
+  assert.equal(JSON.stringify(openedTabs[0].scope), JSON.stringify({ sessionId: 'session-test' }))
+  assert.equal(
+    JSON.stringify(JSON.parse(window.localStorage.getItem('dsh-sidebar:v1:sidechat-thread'))),
+    JSON.stringify({ 'session-test': 'session-side-1' }),
+    'the new thread is parked where the tab looks for it',
+  )
+
+  // The selection lands in that tab's OWN composer VERBATIM: no wrapper, no `>`
+  // prefix — the person adds their own question and sends it.
+  const field = document.querySelector('.sidechat-composer-stub textarea')
+  assert.equal(field.value, 'my own question', 'the selection is the draft, exactly as selected')
+  assert.equal(document.querySelector('.sidechat-composer-stub textarea').getAttribute('data-dsh-selection-group-sidechat-draft') !== null, true, 'the filled composer is marked')
+  assert.equal(document.activeElement, field, 'and the caret is in it')
+  assert.equal(window.__DSH_SELECTION_GROUP__.sidechatLast, 'inserted')
+  assert.equal(window.__DSH_SELECTION_GROUP__.sidechatLastThread, 'session-side-1')
+  assert.equal(document.getElementById('dsh-selection-group-sidechat-notice'), null, 'a success needs no notice')
+
+  dispose()
+  window.close()
+})
+
+test('the selection reaches a React-controlled composer, appending to what is already there', async () => {
+  // The neighbour's composer is a controlled textarea: React installs its own
+  // `value` property over the prototype's, so writing through the prototype
+  // setter (and dispatching `input`) is the only way a draft lands at all.
+  const { window, document, mod } = boot()
+  const { context } = stubContext()
+  stubFetch(window, { childId: 'session-side-2' })
+  const dispose = mod.apply(context)
+  const field = mountSideChatComposer(document, { value: '## 我的问题', tracked: true })
+
+  pressSidechat(window, document)
+  assert.ok(await waitFor(() => field.__seen.length > 0), 'React must observe the write as a user edit')
+  assert.equal(field.value, '## 我的问题\n\nmy own question', 'the existing draft is preserved and the selection appended verbatim')
+  assert.equal(window.__DSH_SELECTION_GROUP__.sidechatLast, 'inserted')
+
+  dispose()
+  window.close()
+})
+
+test('a side chat with no composer to write into says so, and invents nothing', async () => {
+  // The bottom workbench is collapsed, so the tab exists in state but its view
+  // (and therefore its textarea) never mounts. The quote cannot be placed: the
+  // action must say that instead of pretending it landed.
+  const { window, document, mod } = boot()
+  const { context, openedTabs } = stubContext()
+  stubFetch(window, { childId: 'session-side-3' })
+  const dispose = mod.apply(context)
+  document.querySelectorAll('.sidechat-composer-stub').forEach((node) => node.remove())
+
+  pressSidechat(window, document, { pollMs: 60 })
+  assert.ok(await waitFor(() => document.getElementById('dsh-selection-group-sidechat-notice') !== null), 'the missing composer must be visible')
+  assert.match(document.getElementById('dsh-selection-group-sidechat-notice').textContent, /输入框.*没有出现|composer did not appear/)
+  assert.equal(openedTabs.length, 1, 'the tab was opened — only the prefill failed')
+  assert.equal(window.__DSH_SELECTION_GROUP__.sidechatLast, 'no-composer')
+  assert.equal(window.__DSH_SELECTION_GROUP__.sidechatLastThread, 'session-side-3')
+
+  dispose()
+  window.close()
+})
+
+test('the default composer wait works with no window override set', async () => {
+  // Regression for a shipped ReferenceError: the constant the default branch
+  // reads was left behind by a refactor, so the action died with
+  // "SIDECHAT_DRAFT_POLL_MS is not defined" the first time it ran on a machine
+  // with no override. Every earlier test set the override, which is exactly why
+  // none of them caught it. This one sets NOTHING and takes the real default.
+  const { window, document, mod } = boot()
+  const { context, openedTabs } = stubContext()
+  stubFetch(window, { childId: 'session-side-7' })
+  const dispose = mod.apply(context)
+  assert.equal(window.__DSH_SELECTION_GROUP_SIDECHAT_POLL_MS__, undefined, 'precondition: no override in this window')
+
+  pressSidechat(window, document)
+  const startedAt = Date.now()
+  assert.ok(
+    await waitFor(() => window.__DSH_SELECTION_GROUP__.sidechatLast === 'no-composer', 6000),
+    'the default path must run to completion instead of throwing',
+  )
+  // The checkout of the reported bug: with the constant missing, the read threw
+  // in the same microtask, so the outcome was `failed` almost at once. A real
+  // default wait burns the whole four seconds before reporting the same state.
+  assert.ok(Date.now() - startedAt >= 3900, `the default wait must actually run (took ${Date.now() - startedAt}ms)`)
+  assert.equal(openedTabs.length, 1, 'the thread and its tab were created')
+  assert.match(document.getElementById('dsh-selection-group-sidechat-notice').textContent, /输入框.*没有出现|composer did not appear/, 'the missing composer is reported')
+  assert.doesNotMatch(String(window.__DSH_SELECTION_GROUP__.lastWindowError ?? ''), /is not defined/, 'no ReferenceError may reach the window')
+
+  dispose()
+  window.close()
+})
+
+test('a side chat insertion never sends the selected text itself', async () => {
+  // The whole point of the asked-for change: the selection becomes a draft. The
+  // host route must never see it, and no prompt may be admitted.
+  const { window, document, mod } = boot()
+  const { context } = stubContext()
+  const calls = stubFetch(window, () => ({ childId: 'session-side-4' }))
+  const dispose = mod.apply(context)
+  mountSideChatComposer(document)
+
+  pressSidechat(window, document)
+  assert.ok(await waitFor(() => window.__DSH_SELECTION_GROUP__.sidechatLast === 'inserted'), 'precondition: the text landed')
+  assert.ok(!calls.some((call) => String(call.body?.question ?? '').includes('my own question')), 'the selection is not on the wire')
+  assert.ok(!calls.some((call) => call.url.includes('sidechat.prompt')), 'and no prompt is admitted')
+
+  dispose()
+  window.close()
+})
+
+test('a refused 侧边对话 says why, and opens no tab', async () => {
+  // The neighbour route refuses a parent session that is not running (409). The
+  // thread never exists, so no tab may be opened onto nothing.
+  const { window, document, mod } = boot()
+  const { context, openedTabs } = stubContext()
+  stubFetch(window, { ok: false, error: { code: 'sidechat-error', message: 'parent session "session-test" is not running' } })
+  const dispose = mod.apply(context)
+  mountSideChatComposer(document)
+
+  pressSidechat(window, document)
+  assert.ok(await waitFor(() => document.getElementById('dsh-selection-group-sidechat-notice') !== null), 'the refusal must be visible')
+
+  const notice = document.getElementById('dsh-selection-group-sidechat-notice').textContent
+  assert.match(notice, /侧边对话失败/)
+  assert.match(notice, /not running/, 'with the route\'s own reason, not a generic failure')
+  assert.equal(openedTabs.length, 0, 'no tab is opened for a thread that was never created')
+  assert.equal(window.__DSH_SELECTION_GROUP__.sidechatLast, 'failed')
+  assert.match(window.__DSH_SELECTION_GROUP__.sidechatLastError, /not running/)
+
+  dispose()
+  assert.equal(document.getElementById('dsh-selection-group-sidechat-notice'), null, 'the last dispose drops the notice and its timer')
+  window.close()
+})
+
+test('a 侧边对话 that cannot reach the route reports it instead of failing silently', async () => {
+  const { window, document, mod } = boot()
+  const { context, openedTabs } = stubContext()
+  stubFetch(window, new Error('Failed to fetch'))
+  const dispose = mod.apply(context)
+  mountSideChatComposer(document)
+
+  pressSidechat(window, document)
+  assert.ok(await waitFor(() => document.getElementById('dsh-selection-group-sidechat-notice') !== null), 'a network failure must be visible')
+  assert.match(document.getElementById('dsh-selection-group-sidechat-notice').textContent, /Failed to fetch/)
+  assert.equal(openedTabs.length, 0)
+  assert.equal(window.__DSH_SELECTION_GROUP__.sidechatLast, 'failed')
+
+  dispose()
+  window.close()
+})
+
+test('a hostile 侧边对话 answer is reported, never acted on', async () => {
+  // A route that is not there answers HTML (or any other shape): the request
+  // "succeeds" while carrying no thread. Nothing may be stored or opened.
+  const { window, document, mod } = boot()
+  const { context, openedTabs } = stubContext()
+  window.fetch = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.reject(new SyntaxError('not json')) })
+  const dispose = mod.apply(context)
+  mountSideChatComposer(document)
+
+  pressSidechat(window, document)
+  assert.ok(await waitFor(() => document.getElementById('dsh-selection-group-sidechat-notice') !== null))
+  assert.match(document.getElementById('dsh-selection-group-sidechat-notice').textContent, /HTTP 200/)
+  assert.equal(openedTabs.length, 0)
+  assert.equal(window.localStorage.getItem('dsh-sidebar:v1:sidechat-thread'), null, 'no thread id is invented')
+
+  dispose()
+  window.close()
+})
+
+test('侧边对话 quotes a very long selection, capped', async () => {
+  const { window, document, mod } = boot()
+  const { context } = stubContext()
+  stubFetch(window, { childId: 'session-side-5' })
+  const dispose = mod.apply(context)
+  mountSideChatComposer(document)
+
+  document.getElementById('user-line').textContent = 'x'.repeat(5000)
+  pressSidechat(window, document)
+  assert.ok(await waitFor(() => window.__DSH_SELECTION_GROUP__.sidechatLast === 'inserted'), 'the long selection still lands')
+
+  const field = document.querySelector('.sidechat-composer-stub textarea')
+  assert.equal(Array.from(field.value).length, 4001, 'the inserted text is capped at 4000 code points plus the ellipsis')
+  assert.ok(field.value.endsWith('…'))
+
+  dispose()
+  window.close()
+})
+
+test('a 侧边对话 tab that refuses to open still reports the failure', async () => {
+  // The thread exists at that point: the person reaches it from the workbench's
+  // own thread menu, so the failure must say so rather than claim nothing happened.
+  const { window, document, mod } = boot()
+  const { context } = stubContext({ sidebar: { version: '0.25.0', features: [], openTab: () => { throw new Error('no workbench') } } })
+  stubFetch(window, { childId: 'session-side-6' })
+  const dispose = mod.apply(context)
+
+  pressSidechat(window, document)
+  assert.ok(await waitFor(() => document.getElementById('dsh-selection-group-sidechat-notice') !== null))
+  assert.match(document.getElementById('dsh-selection-group-sidechat-notice').textContent, /tab did not open|no workbench/)
+  assert.equal(window.__DSH_SELECTION_GROUP__.sidechatLastThread, 'session-side-6', 'the created thread is still recorded')
+
+  dispose()
+  window.close()
+})
+//#endregion
 
 test('pressing 引用 closes the shared box, like 批注 does', async () => {
   const { window, document, mod } = boot()
@@ -748,8 +1203,9 @@ test('the shared box appears in the same turn as the selection', () => {
   // Synchronously — no timer may have run between selecting and this assertion:
   const bar = document.querySelector(`.${BAR_CLASS}`)
   assert.ok(bar !== null, 'the toolbar must be painted in the selectionchange turn')
-  assert.equal(bar.querySelectorAll('button').length, 2, 'and it must already carry both actions')
+  assert.equal(bar.querySelectorAll('button').length, 3, 'and it must already carry every action')
   assert.ok(bar.querySelector(`[${ACTION_ATTR}="quote"]`) !== null)
+  assert.ok(bar.querySelector(`[${ACTION_ATTR}="sidechat"]`) !== null)
   assert.equal(document.documentElement.hasAttribute(HIDE_ATTR), true, 'the standalone button stays hidden meanwhile')
 
   dispose()
@@ -881,3 +1337,92 @@ test('diagnostics keep sampling the document and mirror into localStorage', asyn
   assert.equal(window.__DSH_SELECTION_GROUP__.tick, after, 'dispose must stop the tick, so nothing keeps the page busy')
   window.close()
 })
+
+//#region chat-only (no toolbar over file content)
+/**
+ * The document-preview markers the HOST renders and upstream annotation
+ * recognized: `DOCUMENT_TEXT` inside `[data-textpreview-url]`.
+ */
+const FILE_PREVIEW_HTML = `<!doctype html><html><head></head><body>
+<div data-slot="conversation.session">
+  <div data-chat-flow-kind="user" data-chat-turn="1"><p id="user-line">my own question</p></div>
+</div>
+<div data-composer-card><div id="composer" data-composer-input contenteditable="true"></div></div>
+<div data-slot="sidebar" id="sidebar">
+  <div data-slot="sidebar.right.tab.document">
+    <div data-textpreview-url="dsh-resource://file/session/session-test/package-lock.json">
+      <div data-code-preview><pre id="file-line">"lockfileVersion": 3,</pre></div>
+    </div>
+  </div>
+</div>
+</body></html>`
+
+test('a selection inside a file preview raises no toolbar at all', async () => {
+  // The reported regression: the box appeared over a package-lock.json opened in the
+  // sidebar. Upstream annotation serves file content on purpose (documentSourceOf),
+  // and the merged bundle disabled that path — the toolbar is a chat affordance.
+  const { window, document, mod } = boot(FILE_PREVIEW_HTML)
+  const { context } = stubContext()
+  const dispose = mod.apply(context)
+
+  select(window, 'file-line')
+  await wait(400)
+
+  assert.equal(document.querySelector(`.${BAR_CLASS}`), null, 'no hover box over file content')
+  assert.equal(document.querySelectorAll(`[${ACTION_ATTR}]`).length, 0, 'no injected actions either')
+  assert.equal(document.getElementById(QUOTE_ID)?.style.display ?? '', 'none', 'and the standalone quote button stays hidden')
+
+  dispose()
+  window.close()
+})
+
+test('a file selection leaves the toolbar available for the conversation', async () => {
+  // …and the gate is not a blanket off-switch: selecting in the transcript right
+  // after a file selection still raises the box.
+  const { window, document, mod } = boot(FILE_PREVIEW_HTML)
+  const { context } = stubContext()
+  const dispose = mod.apply(context)
+
+  select(window, 'file-line')
+  await wait(400)
+  assert.equal(document.querySelector(`.${BAR_CLASS}`), null, 'precondition: no box for the file')
+
+  select(window, 'user-line')
+  await wait(400)
+  const bar = document.querySelector(`.${BAR_CLASS}`)
+  assert.ok(bar !== null, 'the conversation still gets its box')
+  assert.equal(bar.querySelectorAll(`[${ACTION_ATTR}]`).length, 2, 'with both injected actions')
+
+  dispose()
+  window.close()
+})
+
+test('a conversation row rendered inside the sidebar is refused too', async () => {
+  // The sidebar hosts a Side Chat view; DSH's right column hosts tab types. The rule
+  // is by COLUMN, not by row kind: a chat row inside [data-slot="sidebar"] raises nothing.
+  const { window, document, mod } = boot(`<!doctype html><html><head></head><body>
+<div data-slot="conversation.session">
+  <div data-chat-flow-kind="user" data-chat-turn="1"><p id="user-line">my own question</p></div>
+</div>
+<div data-composer-card><div id="composer" data-composer-input contenteditable="true"></div></div>
+<div data-slot="sidebar">
+  <div data-slot="sidebar.chat.conversation">
+    <div data-slot="conversation.session">
+      <div data-chat-flow-kind="assistant-step" data-chat-turn="2"><p id="side-line">an answer in the side chat</p></div>
+    </div>
+  </div>
+</div>
+</body></html>`)
+  const { context } = stubContext()
+  const dispose = mod.apply(context)
+
+  select(window, 'side-line')
+  await wait(400)
+
+  assert.equal(document.querySelector(`.${BAR_CLASS}`), null, 'the right column never raises the box')
+  assert.equal(window.__DSH_SELECTION_GROUP__.selection.inTranscript, false, 'and the diagnostic agrees')
+
+  dispose()
+  window.close()
+})
+//#endregion

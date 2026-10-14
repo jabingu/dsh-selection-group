@@ -6,10 +6,9 @@
  *   - dsh-quote-followup v0.2.10 (inlined MIT)
  *   - src/toolbar.js (this project's selection-toolbar glue)
  *
- * Both plugins' browser halves are inlined byte-for-byte, so this bundle works
- * with NEITHER package installed: it is the merge, not an adapter. The grouping
- * layer adopts the two floating toolbars into one pill and never adopts anything
- * it cannot place. See THIRD_PARTY_NOTICES.md for the upstream licences.
+ * Both browser halves are inlined with declared build-time patches. Annotation
+ * renders the sole toolbar; quote exposes native insertion without floating UI.
+ * Neither upstream package is needed at runtime. See THIRD_PARTY_NOTICES.md.
  *
  * @module dsh-selection-group/client
  */
@@ -22,7 +21,7 @@ window.__ModuleLoader__.load({
 
 		//#region vendored: @changfenhuang/dsh-annotation v1.4.11 (MIT, Copyright (c) 2026 omdsh-dev)
 		// Inlined verbatim from https://github.com/omdsh-dev/dsh-annotation — see THIRD_PARTY_NOTICES.md.
-		// Fork deviations applied at build time: chat-only-root, settle-120ms, bar-extra-actions, immediate-toolbar, resync-excerpt-on-click, expose-close-hook, hold-while-dragging (see patches/).
+		// Fork deviations applied at build time: bar-extra-actions, selection-coordinator-context, chat-only-root, coordinated-toolbar, coordinated-layout, coordinated-annotation, coordinated-dismissal, expose-close-hook, annotation-chip-reserved-row, annotation-chip-release-layout (see patches/).
 		// Body kept at column 0 so it stays byte-identical to the vendored file up to those deviations (asserted by test/vendor.test.mjs).
 		const vendoredAnnotation = ((require) => {
 'use strict'
@@ -424,38 +423,7 @@ window.__ModuleLoader__.load({
     }
 
     function annotationRootOf(node) {
-      // FORK DEVIATION (dsh-selection-group): this toolbar is CHAT-ONLY.
-      //
-      // 1. No file content. Upstream also serves the host's text previews through
-      //    documentSourceOf(); this merged bundle does not, because dsh-better-sidebar
-      //    already renders its own 'add selection to conversation' action over a file
-      //    viewer and 引用 / 侧边对话 mean nothing for one. Returning null here disables
-      //    that path without touching upstream's function.
-      var source = null
-      // 2. No right column. Anything under [data-slot="sidebar"] is the sidebar (file
-      //    tree, file viewers, side chat, terminal, tasks) and never raises this box —
-      //    checked before the legacy assistant-row test too, so a chat row rendered there
-      //    cannot slip through.
-      var sidebarNode = (node instanceof Element) ? node : (node !== null && node !== undefined ? node.parentElement : null)
-      if (sidebarNode !== null && sidebarNode !== undefined && typeof sidebarNode.closest === 'function'
-        && sidebarNode.closest('[data-slot="sidebar"], [data-slot^="sidebar."]') !== null) return null
-      if (source !== null) return source.root
-      var row = assistantRowOf(node)
-      if (row !== null) return row
-      // 3. Any CONVERSATION row (upstream stops at assistant rows) — while keeping the
-      //    right-column refusal, and still refusing a selection that spans rows.
-      var el = (node instanceof Element) ? node : (node !== null && node !== undefined ? node.parentElement : null)
-      if (el === null || el === undefined || typeof el.closest !== 'function') return null
-      if (el.closest('button, input, textarea, [contenteditable="true"]') !== null) return null
-      if (el.closest('[data-slot="sidebar"], [data-slot^="sidebar."]') !== null) return null
-      var transcript = el.closest('[data-slot="conversation.session"]')
-      if (transcript === null) return null
-      while (el !== null && el !== document.body) {
-        if (el.hasAttribute('data-chat-flow-kind') || el.hasAttribute('data-chat-turn')) return el
-        if (el === transcript) return null
-        el = el.parentElement
-      }
-      return null
+      return window.__DSH_SELECTION_GROUP_SELECTION__?.rootOf(node) ?? null
     }
 
     function quoteRects(range, saved) {
@@ -977,6 +945,7 @@ window.__ModuleLoader__.load({
 
     // ============================== 插件主体 ==============================
     function apply(ctx) {
+      var selectionApi = window.__DSH_SELECTION_GROUP_SELECTION__
       var sessions = ctx.sessions
 
       // ---------- 当前会话 id 的跨版本解析（覆盖 DSH 0.1.1 ~ 0.2.0-rc.2）----------
@@ -1181,122 +1150,39 @@ window.__ModuleLoader__.load({
       }
 
       function onSelection() {
-        if (ui.mode !== 'closed' && host.childNodes.length === 0) {
-          ui.mode = 'closed'
-          ui.lastKey = ''
+        if (window.__DSH_SELECTION_GROUP_SELECTION__ !== selectionApi) return
+        if (ui.mode === 'editing' || ui.mode === 'composing') return
+        var frame = selectionApi.getSnapshot()
+        if (frame === null) { closeToolbar(); return }
+        if (ui.selectionSnapshot !== frame) {
+          if (!frame.recovering) frame.annotationAnchor = captureAnchor(frame.text)
+          ui.selectionSnapshot = frame
         }
-        if (ui.mode === 'editing' || ui.mode === 'composing' || ignoreUntil > Date.now()) return
-        var sel = window.getSelection()
-        if (sel === null || sel.isCollapsed || sel.rangeCount === 0) {
-          clearSettle()
-          return
-        }
-        var range = sel.getRangeAt(0)
-        var anc = range.commonAncestorContainer
-        var ancEl = anc instanceof Element ? anc : (anc && anc.parentElement)
-        if (ancEl !== null && ancEl.closest) {
-          if (ancEl.closest('[data-annotation-for-dsh]') || ancEl.closest('[data-annotation-overlay]')
-            || ancEl.closest('[data-annotation-num-layer]')
-            || ancEl.closest('[data-composer-card]') || ancEl.closest('[data-input-scroll]')) {
-            clearSettle()
-            return
-          }
-        }
-        if (host.contains(anc) || overlay.contains(anc) || numLayer.contains(anc)) {
-          clearSettle()
-          return
-        }
-        var text = sel.toString().trim()
-        if (text.length === 0) { clearSettle(); return }
-        var key = selectionKey(sel)
-        var rootEl = annotationRootOf(range.commonAncestorContainer)
-        var source = documentSourceOf(range.commonAncestorContainer)
-        var selSessionId = readCurrentSessionId()
-        if (source !== null && selSessionId !== undefined && source.sessionId !== selSessionId) rootEl = null
-        if (rootEl === null) { clearSettle(); closeToolbar(); return }
-        // FORK DEVIATION (dsh-selection-group): the conversational gate that the
-        // immediate paint below must keep. Upstream's copy of this return lived in the
-        // settle that the deviation replaces; dropping it made the box appear for ANY
-        // selection — including file content in the sidebar — because this toolbar only
-        // ever consults `ui.selectionRoot` when an action is CLICKED, never before it paints.
-        clearSettle()
-        // FORK DEVIATION (dsh-selection-group): paint the toolbar in THIS turn, so
-        // 批注 and 引用 appear together with the selection instead of after the
-        // settle. While the pointer is still down the box waits for the release:
-        // a drag fires selectionchange on every frame, and crossing a message
-        // boundary closes the box once, which made it flicker.
-        // The settle below still re-validates and re-renders once with the final
-        // excerpt, and clicking 批注 re-syncs from the live selection (see
-        // resync-excerpt-on-click), so nothing anchors a half-finished drag.
-        var groupDragging = typeof window.__DSH_SELECTION_GROUP_IS_DRAGGING__ === "function"
-          && window.__DSH_SELECTION_GROUP_IS_DRAGGING__() === true
-        if (groupDragging === false) {
-          var immediateRect = range.getBoundingClientRect()
-          if (immediateRect.width > 0 && immediateRect.height > 0) {
-            var immediatePos = placeAbove(immediateRect, 40)
-            if (ui.mode === 'actions' && ui.el !== null) {
-              ui.pos = immediatePos
-              ui.el.style.left = immediatePos.left + 'px'
-              ui.el.style.top = immediatePos.top + 'px'
-            } else {
-              ui.mode = 'actions'
-              ui.quote = text
-              ui.source = source
-              ui.selectionRoot = rootEl
-              ui.error = null
-              ui.pos = immediatePos
-              render()
-            }
-          }
-        }
-        settleTimer = setTimeout(function () {
-          settleTimer = null
-          // FORK DEVIATION (dsh-selection-group): if the pointer is still down, a
-          // drag is in progress — wait for the release instead of painting a box
-          // that the next selectionchange would close again (the flicker).
-          if (typeof window.__DSH_SELECTION_GROUP_IS_DRAGGING__ === "function"
-            && window.__DSH_SELECTION_GROUP_IS_DRAGGING__() === true) return
-          if (ui.mode === 'editing' || ui.mode === 'composing') return
-          var s = window.getSelection()
-          if (s === null || s.isCollapsed || selectionKey(s) !== key) return
-          var r = s.getRangeAt(0)
-          if (annotationRootOf(r.commonAncestorContainer) !== rootEl) return
-          var currentSource = documentSourceOf(r.commonAncestorContainer)
-          var settleSessionId = readCurrentSessionId()
-          if ((currentSource && currentSource.sourceUrl) !== (source && source.sourceUrl)
-            || (source !== null && settleSessionId !== undefined && source.sessionId !== settleSessionId)) return
-          var rect = r.getBoundingClientRect()
-          if (rect.width === 0 || rect.height === 0) return
-          var p = placeAbove(rect, 40)
-          if (ui.mode === 'actions' && ui.quote === text && (ui.source && ui.source.sourceUrl) === (source && source.sourceUrl)) {
-            ui.lastKey = key
-            ui.pos = p
-            if (ui.el !== null && ui.el.style) {
-              ui.el.style.left = p.left + 'px'
-              ui.el.style.top = p.top + 'px'
-            }
-            return
-          }
-          ui.lastKey = key
-          ui.mode = 'actions'
-          ui.quote = text
-          ui.source = source
-          ui.selectionRoot = rootEl
-          ui.error = null
-          ui.pos = p
-          render()
-        }, 120)
+        ui.quote = frame.text
+        ui.source = null
+        ui.selectionRoot = frame.root
+        if (window.__DSH_SELECTION_GROUP_IS_DRAGGING__?.() === true) return
+        var rect = frame.rect
+        if (!rect || rect.width <= 0 || rect.height <= 0) return
+        ui.pos = placeAbove(rect, 40)
+        var existing = ui.mode === 'actions' && ui.el !== null && host.contains(ui.el)
+        ui.mode = 'actions'
+        ui.error = null
+        if (!existing) { render(); return }
+        ui.el.style.left = ui.pos.left + 'px'
+        ui.el.style.top = ui.pos.top + 'px'
+        var button = ui.el.querySelector('button:not([data-dsh-selection-group-action])')
+        var already = ui.quotes.some(function (q) { return q.text === ui.quote && !q.sourceUrl })
+        button.disabled = already
+        button.title = already ? t('actions.alreadyTitle') : t('actions.annotateTitle')
+        button.textContent = already ? t('actions.already') : t('actions.annotate')
+        if (!already) button.prepend(ICONS.plus())
+        var currentIds = Array.from(ui.el.querySelectorAll('[data-dsh-selection-group-action]')).map(function (b) { return b.getAttribute('data-dsh-selection-group-action') }).join(',')
+        var nextIds = (window.__DSH_SELECTION_GROUP_ACTIONS__?.() || []).map(function (action) { return action.id }).join(',')
+        if (currentIds !== nextIds) render()
       }
       document.addEventListener('selectionchange', onSelection)
-
-      // FORK DEVIATION (dsh-selection-group): publish this toolbar's own
-      // closeToolbar, so the merged toolbar's injected 引用 action can close the
-      // box exactly like pressing 批注 does (which switches to the editor card).
-      // Without it the box lingers, because onSelection only returns on a
-      // collapsed selection — it never closes the toolbar by itself.
-      try {
-        window.__DSH_SELECTION_GROUP_CLOSE__ = function () { closeToolbar() }
-      } catch (_) {}
+      window.__DSH_SELECTION_GROUP_CLOSE__ = function () { closeToolbar() }
 
       function clearSettle() {
         if (settleTimer !== null) { clearTimeout(settleTimer); settleTimer = null }
@@ -1320,39 +1206,18 @@ window.__ModuleLoader__.load({
         anchorRaf = true
         requestAnimationFrame(function () {
           anchorRaf = false
+          if (window.__DSH_SELECTION_GROUP_SELECTION__ !== selectionApi) return
           if (ui.quotes.length > 0) renderMarkers()
           updateChip()
           if (ui.mode === 'editing' && ui.el !== null) positionEditor(ui.el, ui.pos.left, ui.pos.top)
-          if (ui.mode !== 'actions' || ui.quote === '') return
-          var rect = null
-          var sel = window.getSelection()
-          if (sel !== null && !sel.isCollapsed && sel.rangeCount > 0) {
-            var live = sel.getRangeAt(0)
-            if (annotationRootOf(live.commonAncestorContainer) === ui.selectionRoot
-              && (documentSourceOf(live.commonAncestorContainer)?.sourceUrl || '') === (ui.source && ui.source.sourceUrl || '')
-              && sel.toString().trim() === ui.quote) {
-              rect = live.getBoundingClientRect()
-            }
-          }
-          if (rect === null) {
-            var range = locateQuote(ui.quote, ui.source)
-            if (range !== null) rect = range.getBoundingClientRect()
-          }
-          if (rect === null || rect.width === 0 || rect.height === 0) {
-            if (lostSince === 0) lostSince = Date.now()
-            if (Date.now() - lostSince > ANCHOR_LOST_MS) { lostSince = 0; closeToolbar() }
-            return
-          }
-          lostSince = 0
-          var p = placeAbove(rect, 40)
-          if (Math.abs(p.left - ui.pos.left) + Math.abs(p.top - ui.pos.top) > 2) {
-            ui.pos = p
-            if (ui.el !== null && ui.el.style) {
-              ui.el.style.left = p.left + 'px'
-              ui.el.style.top = p.top + 'px'
-            } else {
-              render()
-            }
+          if (ui.mode !== 'actions') return
+          var rect = selectionApi.rect()
+          if (!rect) { closeToolbar(); return }
+          if (rect.width <= 0 || rect.height <= 0) return
+          ui.pos = placeAbove(rect, 40)
+          if (ui.el !== null) {
+            ui.el.style.left = ui.pos.left + 'px'
+            ui.el.style.top = ui.pos.top + 'px'
           }
         })
       }
@@ -1925,25 +1790,16 @@ window.__ModuleLoader__.load({
       }
 
       function enterEditing() {
-        // FORK DEVIATION (dsh-selection-group): the toolbar can be painted before
-        // the settle re-read the selection, so take the live excerpt now instead
-        // of the one captured when the toolbar first appeared.
-        try {
-          var liveSelection = window.getSelection()
-          if (liveSelection !== null && liveSelection.isCollapsed !== true && liveSelection.rangeCount > 0) {
-            var liveRange = liveSelection.getRangeAt(0)
-            var liveText = liveSelection.toString().trim()
-            if (liveText.length > 0 && annotationRootOf(liveRange.commonAncestorContainer) !== null) {
-              ui.quote = liveText
-              ui.source = documentSourceOf(liveRange.commonAncestorContainer)
-            }
-          }
-        } catch (_) { /* keep the captured excerpt */ }
+        var frame = selectionApi.getSnapshot()
+        if (frame === null) { closeToolbar(); return }
+        ui.quote = frame.text
+        ui.source = null
+        ui.selectionRoot = frame.root
         ui.mode = 'editing'
         ui.noteDraft = ''
         ui.error = null
         ui.editingId = null
-        ui.pendingAnchor = captureAnchor(ui.quote)
+        ui.pendingAnchor = frame.annotationAnchor || captureAnchor(frame.text)
         render()
       }
 
@@ -2127,6 +1983,7 @@ window.__ModuleLoader__.load({
       }
 
       function closeToolbar() {
+        if (window.__DSH_SELECTION_GROUP_SELECTION__ === selectionApi) selectionApi.clear()
         if (ui.mode === 'closed') return
         clearSettle()
         ui.mode = 'closed'
@@ -2193,12 +2050,41 @@ window.__ModuleLoader__.load({
         return card
       }
 
-      function updateChip() {
-        if (ui.quotes.length === 0) {
-          chipLayer.style.display = 'none'
-          clearTip(chipLayer)
-          return
+      var chipReservation = null
+      var chipLayoutRaf = null
+      function settleChipLayout(saved, scroller, followTail, landing) {
+        if (chipLayoutRaf !== null) cancelAnimationFrame(chipLayoutRaf)
+        // The host also observes composer height. Re-measure after it commits,
+        // rather than waiting for the reader's next wheel/scroll event.
+        chipLayoutRaf = requestAnimationFrame(function () {
+          chipLayoutRaf = null
+          if (chipReservation !== saved || !saved.seat.isConnected
+            || window.__DSH_SELECTION_GROUP_SELECTION__ !== selectionApi) return
+          if (followTail && scroller.isConnected && Math.abs(scroller.scrollTop - landing) <= 2)
+            scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+          updateChip()
+          renderMarkers()
+        })
+      }
+      function releaseChipSpace() {
+        if (chipLayoutRaf !== null) { cancelAnimationFrame(chipLayoutRaf); chipLayoutRaf = null }
+        if (chipReservation === null) return
+        var saved = chipReservation
+        chipReservation = null
+        // Restore only our own padding; do not overwrite a newer host style.
+        if (saved.seat.style.getPropertyValue('padding-top') === saved.applied
+          && saved.seat.style.getPropertyPriority('padding-top') === 'important') {
+          if (saved.inline) saved.seat.style.setProperty('padding-top', saved.inline, saved.priority)
+          else saved.seat.style.removeProperty('padding-top')
         }
+      }
+      function hideChip() {
+        chipLayer.style.display = 'none'
+        releaseChipSpace()
+        clearTip(chipLayer)
+      }
+      function updateChip() {
+        if (ui.quotes.length === 0) { hideChip(); return }
         chipLayer.textContent = ''
         var b = document.createElement('b')
         b.style.cssText = 'color:var(--dsw-alias-text-accent,#4c9aff);font-weight:700;'
@@ -2208,35 +2094,47 @@ window.__ModuleLoader__.load({
         var card = document.querySelector('[data-composer-card]')
         var seat = card === null ? null : composerSeatOf(card)
         if (seat !== observedComposer) {
+          releaseChipSpace()
           if (composerObserver !== null) composerObserver.disconnect()
           observedComposer = seat
-          // 队列增加/展开时卡片尺寸可能完全不变，要观察包含 dock 的 seat。
           if (composerObserver !== null && seat !== null) composerObserver.observe(seat)
         }
-        if (card === null) {
-          chipLayer.style.display = 'none'
-          clearTip(chipLayer)
-          return
-        }
+        if (card === null) { hideChip(); return }
         var r = card.getBoundingClientRect()
         if (r.width === 0 || r.height === 0 || r.right <= 0 || r.bottom <= 0
-          || r.left >= window.innerWidth || r.top >= window.innerHeight) {
-          chipLayer.style.display = 'none'
-          clearTip(chipLayer)
-          return
-        }
-        // display:none 时 offsetWidth 为 0；先显示再量，首帧也能正确对齐长文案。
+          || r.left >= window.innerWidth || r.top >= window.innerHeight) { hideChip(); return }
         chipLayer.style.display = 'flex'
+        chipLayer.style.whiteSpace = 'nowrap'
+        chipLayer.style.boxSizing = 'border-box'
+        chipLayer.style.maxWidth = 'calc(100vw - 16px)'
         var w = chipLayer.offsetWidth || 80
         var h = chipLayer.offsetHeight || 24
-        var top = Math.min(r.top, seat.getBoundingClientRect().top) - h - 6
-        // 不能把胶囊钳回 seat 内而遮住队列控件；空间恢复后下一次布局刷新会重显。
-        if (top < 8) {
-          chipLayer.style.display = 'none'
-          clearTip(chipLayer)
-          return
+        if (chipReservation === null) {
+          chipReservation = { seat: seat, inline: seat.style.getPropertyValue('padding-top'),
+            priority: seat.style.getPropertyPriority('padding-top'),
+            base: parseFloat(getComputedStyle(seat).paddingTop) || 0, applied: '' }
         }
-        chipLayer.style.left = Math.max(8, Math.min(r.right - w - 12, window.innerWidth - w - 8)) + 'px'
+        // Reserve a real row inside the composer seat, above its queue and card.
+        // Merely moving a fixed chip left would overlap the preceding message.
+        var padding = (chipReservation.base + h + 12) + 'px'
+        var changed = seat.style.getPropertyValue('padding-top') !== padding
+          || seat.style.getPropertyPriority('padding-top') !== 'important'
+        var scroller = seat.closest('[data-conversation-scroll]')
+        var followTail = scroller !== null
+          && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 2
+        if (changed) {
+          seat.style.setProperty('padding-top', padding, 'important')
+          // A sticky composer grows upwards while the scroll range grows downwards.
+          // Keep an existing tail landing; never pull a history reader to the end.
+          if (followTail) scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+        }
+        chipReservation.applied = padding
+        if (changed) settleChipLayout(chipReservation, scroller, followTail, scroller === null ? 0 : scroller.scrollTop)
+        var top = seat.getBoundingClientRect().top
+          + (parseFloat(getComputedStyle(seat).borderTopWidth) || 0) + chipReservation.base + 6
+        if (top < 8 || top + h > window.innerHeight - 8) { hideChip(); return }
+        r = card.getBoundingClientRect()
+        chipLayer.style.left = Math.max(8, Math.min(r.left + 12, window.innerWidth - w - 8)) + 'px'
         chipLayer.style.top = top + 'px'
       }
 
@@ -2931,7 +2829,8 @@ window.__ModuleLoader__.load({
         if (decoTimer !== null) { clearInterval(decoTimer); decoTimer = null }
         if (decorateAllPending !== null) { clearTimeout(decorateAllPending); decorateAllPending = null }
         if (composerObserver !== null) composerObserver.disconnect()
-        chipLayer.remove()
+        releaseChipSpace()
+        chipLayer.remove() // reserved row has been released
         tipLayer.remove()
         host.remove()
         overlay.remove()
@@ -2949,7 +2848,7 @@ window.__ModuleLoader__.load({
 
 		//#region vendored: dsh-quote-followup v0.2.10 (MIT, Copyright (c) 2026 tr1v3r)
 		// Inlined verbatim from https://github.com/tr1v3r/dsh-quote-followup — see THIRD_PARTY_NOTICES.md.
-		// Fork deviations applied at build time: mousedown-tolerates-merged-trigger, fail-loud-without-excerpt, keep-excerpt-across-scroll, keep-excerpt-while-toolbar-holds (see patches/).
+		// Fork deviations applied at build time: headless-quote-capture, fail-loud-without-excerpt, headless-quote-lifecycle, headless-quote-cleanup, no-standalone-button, remove-floating-quote-helpers, clear-quote-without-dom, insert-quote-without-dom, locale-without-floating-button, cleanup-without-floating-button (see patches/).
 		// Body kept at column 0 so it stays byte-identical to the vendored file up to those deviations (asserted by test/vendor.test.mjs).
 		const vendoredQuote = ((require) => {
 var module = { exports: {} };
@@ -3389,176 +3288,31 @@ var module = { exports: {} };
 		 * just unstyled.
 		 */
 		const ensureStyles = () => {
-			const head = document.head;
-			if (head === null || typeof head.appendChild !== "function")
-				return;
-			const existing = document.getElementById(STYLE_ID);
-			if (existing !== null) {
-				if (existing.getAttribute(STYLE_VERSION_ATTR) === CLIENT_VERSION)
-					return;
-				existing.remove();
-			}
-			const style = document.createElement("style");
+			if (!document.head || document.getElementById(STYLE_ID)) return;
+			const style = document.createElement('style');
 			style.id = STYLE_ID;
 			style.setAttribute(STYLE_VERSION_ATTR, CLIENT_VERSION);
-			style.textContent = [
-				`.${BUTTON_CLASS} {`,
-				"  position: fixed;",
-				"  z-index: 2147483600;",
-				"  display: inline-flex;",
-				"  align-items: center;",
-				"  gap: 6px;",
-				"  height: 28px;",
-				"  padding: 0 12px;",
-				"  border: none;",
-				"  border-radius: 14px;",
-				"  background: var(--dsw-alias-button-primary-fill, rgba(56, 56, 62, .94));",
-				"  color: var(--dsw-alias-label-primary-foreground, #f5f5f7);",
-				"  font-family: var(--dsw-font-family, system-ui);",
-				"  font-size: 12px;",
-				"  line-height: 18px;",
-				"  white-space: nowrap;",
-				"  cursor: pointer;",
-				"  box-shadow: var(--dsw-shadow-lv3, 0 2px 10px rgba(0, 0, 0, .28));",
-				"  user-select: none;",
-				"  animation: dsh-qf-pop .12s var(--ds-ease-in-out, ease);",
-				"}",
-				`.${BUTTON_CLASS}:hover:not(:disabled) {`,
-				"  background: var(--dsw-alias-button-primary-hover, rgba(72, 72, 80, .96));",
-				"}",
-				`.${BUTTON_CLASS}:active { filter: brightness(.92); }`,
-				`.${BUTTON_CLASS}:focus-visible {`,
-				"  outline: 2px solid var(--dsw-alias-text-accent, #4c9aff);",
-				"  outline-offset: 1px;",
-				"}",
-				`.${NOTICE_CLASS} {`,
-				"  position: fixed;",
-				"  z-index: 2147483600;",
-				"  left: 50%;",
-				"  bottom: 24px;",
-				"  transform: translateX(-50%);",
-				"  max-width: min(90vw, 480px);",
-				"  padding: 8px 12px;",
-				"  border-radius: 8px;",
-				"  background: var(--dsw-alias-button-primary-fill, rgba(56, 56, 62, .94));",
-				"  color: var(--dsw-alias-label-primary-foreground, #f5f5f7);",
-				"  font-family: var(--dsw-font-family, system-ui);",
-				"  font-size: 12px;",
-				"  pointer-events: none;",
-				"}",
-				"@keyframes dsh-qf-pop {",
-				"  from { opacity: 0; transform: translateY(3px); }",
-				"  to { opacity: 1; transform: none; }",
-				"}"
-			].join("\n");
-			head.appendChild(style);
+			style.textContent = `.${NOTICE_CLASS} { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); max-width: min(560px, 82vw); padding: 8px 12px; border-radius: 8px; background: var(--dsh-color-surface-2, #222); color: var(--dsh-color-text-1, #fff); font-size: 12px; z-index: 2147483000; }`;
+			document.head.appendChild(style);
 		};
-		const ensureButton = () => {
-			ensureStyles();
-			const existing = document.getElementById(BUTTON_ID);
-			if (existing?.getAttribute(BUTTON_VERSION_ATTR) === CLIENT_VERSION)
-				return existing;
-			existing?.remove();
-			const button = document.createElement("button");
-			button.id = BUTTON_ID;
-			button.setAttribute(BUTTON_VERSION_ATTR, CLIENT_VERSION);
-			button.type = "button";
-			button.className = BUTTON_CLASS;
-			button.textContent = currentT("button.label");
-			button.title = currentT("button.title");
-			button.style.display = "none";
-			button.addEventListener("mousedown", (event) => {
-				event.preventDefault();
-				event.stopPropagation();
-			});
-			button.addEventListener("click", (event) => {
-				event.preventDefault();
-				event.stopPropagation();
-				onQuoteClick();
-			});
-			document.body.appendChild(button);
-			return button;
-		};
-		const placeButton = (button, rect) => {
-			// Reveal before measuring: offsetWidth of a display:none element is 0,
-			// and the fixed-width guard below keeps fake DOMs (no layout) working.
-			button.style.display = "inline-flex";
-			const width = Number.isFinite(button.offsetWidth) && button.offsetWidth > 0
-				? button.offsetWidth
-				: 64;
-			// Center on the selection; measurement guards keep fake/hidden
-			// elements (offsetWidth 0 / undefined) on the old fixed-width path.
-			let x = rect.left + rect.width / 2 - width / 2;
-			let y = rect.top - 34; // pill height (28px) + 6px gap
-			if (y < 4)
-				y = rect.bottom + 6;
-			x = Math.max(4, Math.min(x, window.innerWidth - width - 4));
-			button.style.left = `${Math.round(x)}px`;
-			button.style.top = `${Math.round(y)}px`;
-		};
-		const hideButton = () => {
-			const button = document.getElementById(BUTTON_ID);
-			if (button !== null)
-				button.style.display = "none";
-		};
-		const dismissQuote = () => {
-			pendingQuote = null;
-			hideButton();
-		};
+		const dismissQuote = () => { pendingQuote = null; };
+		let lastSelectionSnapshot = null;
 		const onSelectionChange = () => {
-			const selection = document.getSelection();
-			// FORK DEVIATION (dsh-selection-group): while the merged toolbar is in charge
-			// (its marker is set) a selection that momentarily cannot be resolved — the
-			// transcript re-renders under a live selection while an answer streams, leaving
-			// the range empty or unmeasurable — must NOT discard the pending excerpt. The
-			// excerpt is the text the person asked to quote, and 引用 inserts that text, so
-			// dropping it produced the plugin own "excerpt saved; select the original text
-			// to retry" notice on a press that should have worked.
-			// Escape, an outside press and a scroll keep their upstream meaning, and once the
-			// merged box is gone the marker is cleared and this guard stops applying.
-			const keepExcerptForMergedToolbar = document.documentElement.hasAttribute("data-dsh-selection-group-bar");
-			const transcript = selectionInTranscript(selection);
-			if (transcript === null) {
-				if (!keepExcerptForMergedToolbar)
-					dismissQuote();
-				return;
-			}
-			const text = selection.toString();
-			if (text === null || text.trim() === "") {
-				if (!keepExcerptForMergedToolbar)
-					dismissQuote();
-				return;
-			}
-			const range = selection.getRangeAt(0);
-			const rect = range.getBoundingClientRect();
-			if (rect.width === 0 && rect.height === 0) {
-				if (!keepExcerptForMergedToolbar)
-					dismissQuote();
-				return;
-			}
+			const frame = window.__DSH_SELECTION_GROUP_SELECTION__?.getSnapshot();
+			if (!frame) { lastSelectionSnapshot = null; dismissQuote(); return; }
+			if (frame === lastSelectionSnapshot) return;
+			lastSelectionSnapshot = frame;
+			const range = frame.range;
+			const transcript = frame.transcript;
 			const startRow = messageRowOf(range.startContainer, transcript);
 			const endRow = messageRowOf(range.endContainer, transcript);
 			const sameRow = startRow !== null && startRow === endRow;
-			pendingQuote = {
-				text: text.trim(),
-				role: sameRow ? detectRole(range, transcript) : null,
-				turn: sameRow ? detectTurn(range, transcript) : null,
-				range: range.cloneRange()
-			};
-			placeButton(ensureButton(), rect);
+			pendingQuote = { text: frame.text, role: sameRow ? detectRole(range, transcript) : null,
+				turn: sameRow ? detectTurn(range, transcript) : null, range: range.cloneRange() };
 		};
 		const onQuoteClick = () => {
-			if (pendingQuote === null) {
-				// FORK DEVIATION (dsh-selection-group): the merged toolbar's 引用 button can
-				// be pressed after the pending excerpt was dropped (any window scroll, or a
-				// pointerdown outside the button). Fail loudly instead of returning
-				// silently: the person sees why, and the glue can tell a no-op from a real
-				// insertion and leave its box open for a retry.
-				showNotice("notice.insert-failed");
-				return;
-			}
-			const quote = pendingQuote;
-			hideButton();
+			if (pendingQuote === null) { showNotice("notice.insert-failed"); return; }
+			const quote = pendingQuote; // headless insertion
 			const composer = findComposer();
 			if (composer === null) {
 				restoreSelection(quote.range);
@@ -3609,11 +3363,7 @@ var module = { exports: {} };
 			let unregisterLocale = null;
 			let unsubscribeLocale = null;
 			const refreshButtonCopy = () => {
-				const button = document.getElementById(BUTTON_ID);
-				if (button !== null) {
-					button.textContent = currentT("button.label");
-					button.title = currentT("button.title");
-				}
+				// No floating quote button to localize.
 				const notice = document.getElementById(NOTICE_ID);
 				if (notice !== null)
 					notice.textContent = currentT(notice.getAttribute("data-message-key"));
@@ -3642,44 +3392,22 @@ var module = { exports: {} };
 			} catch (error) {
 				console.warn("[dsh-quote-followup] native reference codec unavailable; using text fallback", error);
 			}
-			const onScroll = () => {
-				// FORK DEVIATION (dsh-selection-group): while the merged toolbar holds the
-				// interaction (its box is up, the pointer is down, or the selection is still
-				// fresh) a scroll must NOT discard the pending excerpt. The transcript
-				// auto-scrolls while an answer streams, and dropping the excerpt there made
-				// 引用 fail with "excerpt saved; select the original text to retry".
-				// Standalone behaviour is unchanged: with no merged toolbar in charge, the
-				// floating button would otherwise sit at a stale position after a scroll.
-				if (typeof document !== "undefined" && document.documentElement !== null
-					&& document.documentElement.hasAttribute("data-dsh-selection-group-bar"))
-					return;
-				dismissQuote();
+			const onScroll = () => {};
+			const onKeyDown = () => {};
+			const onMouseDown = () => {};
+			const quoteApi = {
+				capture: onSelectionChange,
+				clear: () => { lastSelectionSnapshot = null; dismissQuote(); },
+				run: () => { onSelectionChange(); const hadQuote = pendingQuote !== null; onQuoteClick(); return hadQuote && pendingQuote === null; }
 			};
-			const onKeyDown = (event) => {
-				if (event.key === "Escape")
-					dismissQuote();
-			};
-						const onMouseDown = (event) => {
-				// FORK DEVIATION (dsh-selection-group): the merged toolbar renders the 引用
-				// action inside the annotation host, so a press anywhere in that box — the
-				// action, the box background, or the 批注 button — must keep the pending
-				// excerpt. Pressing 引用 after touching the box otherwise failed with
-				// "excerpt saved; select the original text to retry". Presses outside the
-				// box still dismiss, exactly as upstream intends.
-				const inMergedToolbar = event.target instanceof Element
-					&& (event.target.id === BUTTON_ID
-						|| (typeof event.target.closest === "function"
-							&& (event.target.closest("[data-dsh-selection-group-action]") !== null
-								|| event.target.closest("[data-annotation-for-dsh]") !== null)));
-				if (!inMergedToolbar)
-					dismissQuote();
-			};
+			window.__DSH_SELECTION_GROUP_QUOTE__ = quoteApi;
 			let disposed = false;
 			let state;
 			const cleanup = () => {
 				if (disposed)
 					return;
 				disposed = true;
+				if (window.__DSH_SELECTION_GROUP_QUOTE__ === quoteApi) delete window.__DSH_SELECTION_GROUP_QUOTE__;
 				clientContext = null;
 				dismissQuote();
 				clearNotice();
@@ -3695,9 +3423,7 @@ var module = { exports: {} };
 				window.removeEventListener("scroll", onScroll, true);
 				document.removeEventListener("keydown", onKeyDown, true);
 				document.removeEventListener("mousedown", onMouseDown, true);
-				const button = document.getElementById(BUTTON_ID);
-				if (button?.getAttribute(BUTTON_VERSION_ATTR) === CLIENT_VERSION)
-					button.remove();
+				// No floating quote DOM to remove.
 				const style = document.getElementById(STYLE_ID);
 				if (style?.getAttribute(STYLE_VERSION_ATTR) === CLIENT_VERSION)
 					style.remove();
@@ -3712,7 +3438,8 @@ var module = { exports: {} };
 			document.addEventListener("mousedown", onMouseDown, true);
 			// Claim the shared id immediately so an older listener in a long-lived tab
 			// cannot keep its obsolete click handler after a client hot-swap.
-			ensureButton();
+			// FORK DEVIATION: quote insertion has no standalone UI.
+			ensureStyles();
 			if (ctx !== undefined && typeof ctx.effect === "function")
 				ctx.effect(() => cleanup, "dsh-quote-followup: selection quote ui");
 		}
@@ -3725,42 +3452,29 @@ var module = { exports: {} };
 
 		//#region selection-toolbar glue (src/toolbar.js)
 		/**
-		 * dsh-selection-toolbar glue — inlined by `scripts/build.mjs`, never registered
-		 * as a module of its own.
-		 *
-		 * ONE hover box, TWO actions. There is no second floating toolbar to move:
-		 *
-		 *   - `@changfenhuang/dsh-annotation`'s toolbar is the only selection UI. A
-		 *     build-time patch (`patches/dsh-annotation.json`) makes it render one extra
-		 *     button per action this glue injects through
-		 *     `window.__DSH_SELECTION_GROUP_ACTIONS__`.
-		 *   - The 引用 button's action simply clicks `dsh-quote-followup`'s own button.
-		 *     That plugin stays fully upstream (selection tracking, native reference
-		 *     chip, markdown fallback); only its floating button is hidden, and only
-		 *     while the shared box is on screen — so if the box ever fails to appear,
-		 *     引用 keeps working standalone instead of regressing.
-		 *
-		 * Nothing here moves DOM nodes, positions anything, or schedules frames: one
-		 * interval toggles a marker attribute and refreshes the diagnostics.
-		 *
-		 * `GROUP_VERSION`/`CLIENT_VERSION` is replaced by the build with the package
-		 * version.
+		 * One selection coordinator and one three-action toolbar, including cross-message
+		 * excerpts. Annotation owns the UI; quote is a headless native-insertion service.
+		 * User dismissal clears the snapshot. DOM rendering loss preserves it for recovery.
+		 * Built into client.js alongside hash-pinned vendor sources and declared patches.
 		 */
 
 		//#region constants
 		const CLIENT_VERSION = "1.6.4";
 		const STYLE_ID = "dsh-selection-group-style";
 		const MARKER_ATTR = "data-dsh-selection-group";
-		const HIDE_ATTR = "data-dsh-selection-group-bar";
+		const SELECTION_API_KEY = "__DSH_SELECTION_GROUP_SELECTION__";
+		const QUOTE_API_KEY = "__DSH_SELECTION_GROUP_QUOTE__";
+		const SELECTION_RANGE_EXCLUDED = '[data-slot="sidebar"], [data-slot^="sidebar."], [data-textpreview-url], [data-textpreview-plain], [data-document-markdown], [data-code-preview], input, textarea, [contenteditable]:not([contenteditable="false"])';
+		// Buttons cannot be selection endpoints, but copy/status controls between
+		// messages must not veto a range whose endpoints are both conversation text.
+		const SELECTION_EXCLUDED = `${SELECTION_RANGE_EXCLUDED}, button`;
 		const ACTIONS_KEY = "__DSH_SELECTION_GROUP_ACTIONS__";
 		/** Published by the patched annotation plugin: its own closeToolbar. */
 		const CLOSE_KEY = "__DSH_SELECTION_GROUP_CLOSE__";
-		const QUOTE_BUTTON_ID = "dsh-quote-followup-btn";
 		const QUOTE_ACTION_ATTR = "data-dsh-selection-group-action";
 		const ANNOTATION_HOST_SELECTOR = "[data-annotation-for-dsh]";
 		const ANNOTATION_BAR_CLASS = "dsh-ann-bar";
 		const ANNOTATION_CARD_CLASS = "dsh-ann-card";
-		const QUOTE_NOTICE_ID = "dsh-quote-followup-notice";
 		/**
 		 * The Side Chat surface this bundle talks to: `dsh-better-sidebar`'s own host
 		 * route and the tab type that owns the per-session Side Chat view.
@@ -3792,6 +3506,7 @@ var module = { exports: {} };
 		 * thread is reachable from the tab's own thread menu instead of automatically.
 		 */
 		const SIDECHAT_LAST_THREAD_KEY = "dsh-sidebar:v1:sidechat-thread";
+		const SIDECHAT_OPERATION_KEY = "__DSH_SELECTION_GROUP_SIDECHAT_OPERATION__";
 		/** Max code points of the selection that is placed in the side chat. */
 		const SIDECHAT_MAX_CHARS = 4000;
 		/** Mark on the composer we filled, so a re-run can find the field we already own. */
@@ -3858,24 +3573,13 @@ var module = { exports: {} };
 			return timer;
 		}
 
-		/**
-		 * The toolbar is event-driven: `selectionchange` paints the marker in its own
-		 * turn, a MutationObserver follows the box appearing/disappearing, and a one-shot
-		 * timer covers the grace window. The interval below is only a safety net (self
-		 * healing, sampling, and any DOM change the observers cannot see), which took the
-		 * idle cost from ~110 DOM queries a second to about one.
-		 */
+		/** The safety heartbeat samples diagnostics and validates service/session ownership. */
 		const TICK_MS = 1000;
 		const SAMPLE_MS = 1000;
-		/**
-		 * How long a fresh transcript selection waits for the shared toolbar before the
-		 * standalone quote button is allowed back (it must not flash, but it must also
-		 * not stay hidden when the toolbar never arrives).
-		 */
-		const GRACE_MS = 300;
+
 		//#endregion
 
-		//#region marker state
+		//#region shared state
 		/** Which layer most recently ensured the shared stylesheet / action hook exists. */
 		let styleOwner = null;
 		let actionsOwner = null;
@@ -3884,14 +3588,51 @@ var module = { exports: {} };
 		let actionsSidechatSeen = false;
 		/** Layers currently mounted — a hot swap can have a successor live before the predecessor goes. */
 		const liveLayers = new Set();
-		/** When the current selection was last seen (for the grace window). */
-		let lastSelectionAt = 0;
 		/** When the environment was last sampled. */
 		let lastSampleAt = 0;
-		/** One-shot re-evaluation after a selection, so the marker is not polled for. */
-		let graceTimer = null;
 		/** 侧边对话: whether one send is in flight (a second press would ride over it). */
 		let sidechatRunning = false;
+		let sidechatOperation = null;
+
+		function cancelSidechatOperation(operation = sidechatOperation) {
+			if (operation === null)
+				return;
+			operation.controller.abort();
+			for (const unsubscribe of operation.unsubscribers.splice(0)) {
+				try { unsubscribe(); } catch (_) { /* optional service already gone */ }
+			}
+			if (sidechatOperation === operation) {
+				sidechatOperation = null;
+				sidechatRunning = false;
+			}
+			if (window[SIDECHAT_OPERATION_KEY] === operation)
+				delete window[SIDECHAT_OPERATION_KEY];
+		}
+
+		function sidechatOperationActive(operation) {
+			return !operation.controller.signal.aborted && !operation.layer.disposed
+				&& actionsOwner === operation.layer && liveLayers.has(operation.layer)
+				&& window[ACTIONS_KEY] === operation.layer.actions
+				&& currentSessionId(operation.ctx) === operation.sessionId;
+		}
+
+		function checkSidechatOperation(operation) {
+			if (!sidechatOperationActive(operation)) {
+				cancelSidechatOperation(operation);
+				throw new window.DOMException("Side chat operation cancelled", "AbortError");
+			}
+		}
+
+		/** Stop waiting even when a service or a test double ignores AbortSignal. */
+		function awaitSidechatOperation(promise, operation) {
+			checkSidechatOperation(operation);
+			return new Promise((resolve, reject) => {
+				const signal = operation.controller.signal;
+				const aborted = () => reject(new window.DOMException("Side chat operation cancelled", "AbortError"));
+				signal.addEventListener("abort", aborted, { once: true });
+				Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+			});
+		}
 		/**
 		 * 侧边对话's failure notice and its deadline. Both live here, not on the layer:
 		 * the notice outlives a hot swap's predecessor (the press that produced it may
@@ -3913,10 +3654,9 @@ var module = { exports: {} };
 			cardUp: false,
 			extraButtons: 0,
 			sampledAt: null,
-			quoteButtonPresent: null,
+			quoteReady: false,
 			annotationHostPresent: null,
 			actionsInstalled: false,
-			quoteButtonHidden: false,
 			stylePresent: null,
 			hookPresent: null,
 			diagnosticsMode: null,
@@ -4329,7 +4069,7 @@ var module = { exports: {} };
 				diagnostics.transcripts = document.querySelectorAll('[data-slot="conversation.session"]').length;
 				diagnostics.flowRows = document.querySelectorAll("[data-chat-flow-kind]").length;
 				diagnostics.turnRows = document.querySelectorAll("[data-chat-turn]").length;
-				diagnostics.quoteButtonPresent = document.getElementById(QUOTE_BUTTON_ID) !== null;
+				diagnostics.quoteReady = window[QUOTE_API_KEY] !== undefined;
 				diagnostics.annotationHostPresent = document.querySelector(ANNOTATION_HOST_SELECTOR) !== null;
 				diagnostics.cardUp = document.querySelector(`.${ANNOTATION_CARD_CLASS}`) !== null;
 				diagnostics.extraButtons = document.querySelectorAll(`[${QUOTE_ACTION_ATTR}]`).length;
@@ -4362,19 +4102,7 @@ var module = { exports: {} };
 		//#endregion
 
 		//#region toolbar glue
-		const styleText = () => [
-			// The shared box carries the 引用 action itself; hide the plugin's own
-			// floating button only while that box is on screen. `!important` beats the
-			// plugin's inline `display`, and a hidden button still fires `.click()`.
-			`html[${HIDE_ATTR}] #${QUOTE_BUTTON_ID} {`,
-			"  display: none !important;",
-			"}",
-			// The injected action reuses the plugin's own ghost-button look; this only
-			// keeps the two labels from colliding when they wrap on a narrow viewport.
-			`[${QUOTE_ACTION_ATTR}] {`,
-			"  white-space: nowrap;",
-			"}"
-		].join("\n");
+		const styleText = () => [`[${QUOTE_ACTION_ATTR}] { white-space: nowrap; }`].join("\n");
 
 		/**
 		 * Insert the stylesheet if it is missing, and hand ownership to the caller.
@@ -4423,7 +4151,7 @@ var module = { exports: {} };
 			}
 		}
 
-		/** The 引用 action: hand the click to dsh-quote-followup's own button. */
+		/** The 引用 action calls the native insertion service; no second UI exists. */
 		function quoteAction(ctx) {
 			const english = ctxIsEnglish(ctx);
 			return {
@@ -4433,30 +4161,17 @@ var module = { exports: {} };
 					? "Quote the selection into the composer (repeatable; editable before sending)"
 					: "引用选中内容到输入框（可多次引用，发送前可编辑）",
 				run: () => {
-					const button = document.getElementById(QUOTE_BUTTON_ID);
-					if (button !== null && typeof button.click === "function")
-						button.click();
-					// The plugin shows a notice only when it could not insert (nothing pending,
-					// no composer, locked composer). Keep the box open in that case so the
-					// person can re-select and retry instead of losing the toolbar silently.
-					if (quoteNoticeText() !== "")
+					const quote = window[QUOTE_API_KEY];
+					if (!quote) {
+						showSidechatNotice(english ? 'Quote insertion is unavailable; reload the plugin.' : '引用插入服务不可用，请重新加载插件。');
 						return;
-					// Pressing 批注 replaces the box with the editor card; pressing 引用 must
-					// close it too, or the box lingers over the composer.
+					}
+					quote.capture();
+					if (quote.run() !== true) return;
+					// The quote core reports failures; only successful insertion closes the UI.
 					closeSharedToolbar();
 				}
 			};
-		}
-
-		/** The quote plugin's own failure notice text, empty when it reported no failure. */
-		function quoteNoticeText() {
-			try {
-				const notice = document.getElementById(QUOTE_NOTICE_ID);
-				return notice === null ? "" : String(notice.textContent || "").trim();
-			}
-			catch (_) {
-				return "";
-			}
 		}
 
 		/** Ask the patched annotation plugin to close its toolbar (after 引用). */
@@ -4538,15 +4253,7 @@ var module = { exports: {} };
 
 		/** The text the person selected, trimmed, or "" when there is nothing usable. */
 		function selectedTextNow() {
-			try {
-				const selection = typeof document.getSelection === "function" ? document.getSelection() : null;
-				if (selection === null || selection.isCollapsed === true || selection.rangeCount === 0)
-					return "";
-				return String(selection.toString() || "").trim();
-			}
-			catch (_) {
-				return "";
-			}
+			return window[SELECTION_API_KEY]?.getSnapshot()?.text ?? "";
 		}
 
 		/** Cap the inserted text; an empty excerpt never earns a side chat. */
@@ -4605,27 +4312,59 @@ var module = { exports: {} };
 		 * message. Nothing is sent, so this costs no tokens — the context is only
 		 * submitted once the person presses send.
 		 */
-		async function prepareSideChat(ctx, sessionId) {
+		async function prepareSideChat(ctx, sessionId, operation) {
+			checkSidechatOperation(operation);
 			if (typeof window.fetch !== "function")
 				return { ok: false, error: "this page has no fetch to reach the side chat route with" };
-			const response = await window.fetch(hostRoute(SIDECHAT_ROUTE), {
+			const response = await awaitSidechatOperation(window.fetch(hostRoute(SIDECHAT_ROUTE), {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ sessionId, question: "" })
-			});
-			const envelope = await readSidechatEnvelope(response);
+				body: JSON.stringify({ sessionId, question: "" }),
+				signal: operation.controller.signal
+			}), operation);
+			checkSidechatOperation(operation);
+			const envelope = await awaitSidechatOperation(readSidechatEnvelope(response), operation);
+			checkSidechatOperation(operation);
 			if (envelope.ok === false)
 				return { ok: false, error: envelope.error };
 			storeSidechatThread(sessionId, envelope.childId);
 			try {
-				sidebarService(ctx)?.openTab({ type: SIDECHAT_TAB_TYPE }, { sessionId });
+				const service = sidebarService(ctx);
+				if (service === null)
+					throw new Error("the sidebar service is no longer available");
+				const before = new Set(sidechatTabs(service, sessionId).map(tab => tab.id));
+				const opened = service.openTab({ type: SIDECHAT_TAB_TYPE, meta: { threadId: envelope.childId } }, { sessionId });
+				// createTab may ignore seed.meta. Bind its newly minted tab synchronously,
+				// before React mounts an autoCreate view and starts a second thread.
+				const created = sidechatTabs(service, sessionId).filter(tab => !before.has(tab.id));
+				if (created.length === 1 && typeof service.updateTab === "function")
+					service.updateTab(created[0].id, { meta: { ...created[0].meta, autoCreate: false, threadId: envelope.childId } }, sessionId);
+				await awaitSidechatOperation(opened, operation);
+				checkSidechatOperation(operation);
 			}
 			catch (error) {
+				if (operation.controller.signal.aborted)
+					throw error;
 				// The thread exists either way: the person reaches it from the workbench's
 				// thread menu, so an open failure is reported without undoing it.
 				return { ok: false, error: `the thread was created but its tab did not open: ${String((error !== null && error !== undefined && error.message) || error)}`, childId: envelope.childId };
 			}
 			return { ok: true, childId: envelope.childId };
+		}
+
+		/** Public sidebar snapshot, including split panes. Never retarget an existing tab. */
+		function sidechatTabs(service, sessionId) {
+			const snapshot = service.getSnapshot?.();
+			if (snapshot?.sessionId !== sessionId)
+				return [];
+			const tabs = [];
+			const visit = node => {
+				if (node === null || typeof node !== "object") return;
+				if (Array.isArray(node.tabs)) tabs.push(...node.tabs.filter(tab => tab.type === SIDECHAT_TAB_TYPE));
+				if (Array.isArray(node.children)) node.children.forEach(visit);
+			};
+			visit(snapshot.state?.bottomSplits);
+			return tabs;
 		}
 
 		/**
@@ -4670,8 +4409,8 @@ var module = { exports: {} };
 		/**
 		 * The Side Chat composer currently on screen.
 		 *
-		 * The neighbour gives consumers no draft API, so the composer is found
-		 * STRUCTURALLY — never by its hashed module class names
+		 * The neighbour gives consumers no draft API. First verify its committed
+		 * tab/scope props, then check the composer structure — never its hashed classes
 		 * (`_4BEzFa_sidechatComposerInput`), which a rebuild renames.
 		 *
 		 * The shape is the neighbour's (SideChatView's composer card):
@@ -4699,11 +4438,56 @@ var module = { exports: {} };
 		 * sharing an ancestor), so the CLOSEST textarea to the button wins — the nearest
 		 * common container. A page without a send button has no side chat composer.
 		 */
-		function findSideChatComposer() {
+		/**
+		 * The neighbour exposes tab metadata through SideChatView's React props, but
+		 * currently exposes neither a draft API nor DOM thread attributes. Read ONLY
+		 * committed props (never pending/alternate props) to identify the owning tab.
+		 * If that compatibility seam disappears, fail closed instead of pasting into
+		 * another composer. No React state, fiber, or neighbour DOM is modified.
+		 */
+		function sidechatComposerOwner(field) {
+			const key = Object.getOwnPropertyNames(field).find(name => name.startsWith("__reactFiber$"));
+			if (key === undefined)
+				return null;
+			let fiber = field[key];
+			let root = fiber;
+			while (root?.return) root = root.return;
+			if (root?.stateNode?.current !== root) {
+				fiber = fiber?.alternate;
+				root = fiber;
+				while (root?.return) root = root.return;
+				if (root?.stateNode?.current !== root) return null;
+			}
+			for (let depth = 0; fiber && depth < 100; depth++, fiber = fiber.return) {
+				const props = fiber.memoizedProps;
+				if (props?.tab?.type === SIDECHAT_TAB_TYPE) {
+					return { sessionId: props.scope?.sessionId ?? props.sessionId,
+						childId: props.tab.meta?.threadId, visible: props.visible === true };
+				}
+			}
+			return null;
+		}
+
+		function findSideChatComposer(sessionId, childId) {
 			try {
 				let best = null;
 				let bestDistance = Number.POSITIVE_INFINITY;
 				for (const field of document.querySelectorAll("textarea")) {
+					if (!field.isConnected || field.disabled || field.readOnly
+						|| field.closest('[hidden], [aria-hidden="true"]') !== null)
+						continue;
+					const owner = sidechatComposerOwner(field);
+					if (owner === null || !owner.visible || owner.sessionId !== sessionId || owner.childId !== childId)
+						continue;
+					let hidden = false;
+					for (let node = field; node !== null; node = node.parentElement) {
+						const style = window.getComputedStyle(node);
+						if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") {
+							hidden = true;
+							break;
+						}
+					}
+					if (hidden) continue;
 					let container = field.parentElement;
 					for (let depth = 0; container !== null && container !== undefined && depth < 2; depth += 1) {
 						if (container !== (document.body ?? document.documentElement)) {
@@ -4779,21 +4563,35 @@ var module = { exports: {} };
 		}
 
 		/** Wait for the tab's composer, polling briefly. Null means it never mounted. */
-		function waitForSideChatComposer(timeoutMs) {
+		function waitForSideChatComposer(timeoutMs, operation, childId) {
 			const pollMs = Math.max(1, Math.round(sidechatDraftPollMs() / 10));
 			const deadline = Date.now() + timeoutMs;
 			return new Promise((resolve) => {
+				let timer = null;
+				const signal = operation.controller.signal;
+				const finish = field => {
+					if (timer !== null) clearTimeout(timer);
+					signal.removeEventListener("abort", aborted);
+					resolve(field);
+				};
+				const aborted = () => finish(null);
+				signal.addEventListener("abort", aborted, { once: true });
 				const attempt = () => {
-					const field = findSideChatComposer();
+					if (!sidechatOperationActive(operation)) {
+						cancelSidechatOperation(operation);
+						finish(null);
+						return;
+					}
+					const field = findSideChatComposer(operation.sessionId, childId);
 					if (field !== null) {
-						resolve(field);
+						finish(field);
 						return;
 					}
 					if (Date.now() >= deadline) {
-						resolve(null);
+						finish(null);
 						return;
 					}
-					unrefTimer(setTimeout(attempt, pollMs));
+					timer = unrefTimer(setTimeout(attempt, pollMs));
 				};
 				attempt();
 			});
@@ -4892,7 +4690,7 @@ var module = { exports: {} };
 		 * until the person presses send themselves. A second press while one is in
 		 * flight is ignored rather than racing it.
 		 */
-		function sideChatAction(ctx) {
+		function sideChatAction(ctx, layer) {
 			const english = ctxIsEnglish(ctx);
 			return {
 				id: "sidechat",
@@ -4901,7 +4699,8 @@ var module = { exports: {} };
 					? "Put the selection in a side conversation's composer, as plain text — it stays there until you send it"
 					: "把选中文字原样放进侧边对话的输入框，发送与否由你决定（不自动发出）",
 				run: () => {
-					if (sidechatRunning)
+					if (sidechatRunning || layer.disposed || actionsOwner !== layer || !liveLayers.has(layer)
+						|| window[ACTIONS_KEY] !== layer.actions)
 						return;
 					const text = selectedTextNow();
 					// The patched toolbar is only rendered for a live transcript selection;
@@ -4927,10 +4726,25 @@ var module = { exports: {} };
 						return;
 					}
 					const insert = sidechatInsertText(truncateSidechatText(text));
+					const operation = { ctx, layer, sessionId, controller: new window.AbortController(), unsubscribers: [] };
+					operation.cancel = () => cancelSidechatOperation(operation);
+					window[SIDECHAT_OPERATION_KEY] = operation;
+					sidechatOperation = operation;
 					sidechatRunning = true;
-					prepareSideChat(ctx, sessionId).then(async (result) => {
+					// Cancel immediately on a session switch where subscriptions exist; the
+					// heartbeat and every async continuation also verify the captured session.
+					const onSession = () => {
+						if (!sidechatOperationActive(operation)) cancelSidechatOperation(operation);
+					};
+					try {
+						for (const source of [ctx.get?.("uiSession")?.adapter?.current, ctx.sessions?.list]) {
+							const unsubscribe = source?.subscribe?.(onSession);
+							if (typeof unsubscribe === "function") operation.unsubscribers.push(unsubscribe);
+						}
+					} catch (_) { /* older hosts use the heartbeat fallback */ }
+					prepareSideChat(ctx, sessionId, operation).then(async (result) => {
+						checkSidechatOperation(operation);
 						if (result.ok === false) {
-							sidechatRunning = false;
 							recordDiagnostics({
 								sidechatLast: "failed",
 								sidechatLastThread: result.childId ?? null,
@@ -4943,21 +4757,21 @@ var module = { exports: {} };
 						}
 						// The tab mounts asynchronously (its view is a lazy chunk), so wait
 						// briefly for its composer before giving up on the prefill.
-						const field = await waitForSideChatComposer(sidechatDraftPollMs());
+						const field = await waitForSideChatComposer(sidechatDraftPollMs(), operation, result.childId);
+						checkSidechatOperation(operation);
 						if (field === null) {
-							sidechatRunning = false;
 							recordDiagnostics({
 								sidechatLast: "no-composer",
 								sidechatLastThread: result.childId,
-								sidechatLastError: "the side chat tab was opened but its composer never mounted"
+								sidechatLastError: "no editable composer bound to the created thread appeared"
 							});
 							showSidechatNotice(english
-								? `The side chat composer did not appear within ${(sidechatDraftPollMs() / 1000).toFixed(0)}s, so the quote was not placed. Open the bottom workbench and press the button again.`
-								: `侧边对话输入框在 ${(sidechatDraftPollMs() / 1000).toFixed(0)} 秒内没有出现，引用没有放进去。请先展开右侧底部工作台，再按一次。`);
+								? `The side chat composer did not appear for the target thread within ${(sidechatDraftPollMs() / 1000).toFixed(0)}s, or its thread identity could not be verified. The selection was not placed; check the workbench and sidebar compatibility.`
+								: `目标线程输入框在 ${(sidechatDraftPollMs() / 1000).toFixed(0)} 秒内没有出现，或无法确认所属线程；选中文字没有放进去。请检查工作台是否展开及侧边栏插件兼容性。`);
 							return;
 						}
-						const placed = prefillSideChatComposer(field, insert);
-						sidechatRunning = false;
+						// React may commit between resolving the poll and resuming this promise.
+						const placed = findSideChatComposer(sessionId, result.childId) === field && prefillSideChatComposer(field, insert);
 						recordDiagnostics({
 							sidechatLast: placed ? "inserted" : "no-composer",
 							sidechatLastThread: result.childId,
@@ -4969,11 +4783,12 @@ var module = { exports: {} };
 								: "侧边对话输入框出现了，但没能写进去；选中文字没有放进去。");
 						}
 					}).catch((error) => {
-						sidechatRunning = false;
+						if (!sidechatOperationActive(operation))
+							return;
 						const message = String((error !== null && error !== undefined && error.message) || error);
 						recordDiagnostics({ sidechatLast: "failed", sidechatLastThread: null, sidechatLastError: message });
 						showSidechatNotice(english ? `Side chat failed: ${message}` : `侧边对话失败：${message}`);
-					});
+					}).finally(() => cancelSidechatOperation(operation));
 				}
 			};
 		}
@@ -4981,6 +4796,11 @@ var module = { exports: {} };
 
 		/** Publish the actions the patched annotation toolbar renders. */
 		function installActions(ctx, layer) {
+			const previous = window[SIDECHAT_OPERATION_KEY];
+			if (previous !== undefined && previous.layer !== layer)
+				previous.cancel();
+			if (sidechatOperation !== null && sidechatOperation.layer !== layer)
+				cancelSidechatOperation();
 			// Rebuilt on every render on purpose: the neighbour service can register
 			// after this bundle mounts, and a stale action list would then never grow its
 			// 侧边对话 button.
@@ -4988,7 +4808,7 @@ var module = { exports: {} };
 				const list = [quoteAction(ctx)];
 				try {
 					if (sidechatAvailable(ctx))
-						list.push(sideChatAction(ctx));
+						list.push(sideChatAction(ctx, layer));
 				}
 				catch (error) {
 					diagnostics.lastError = `the 侧边对话 action could not be published: ${String((error !== null && error !== undefined && error.message) || error)}`;
@@ -4996,6 +4816,7 @@ var module = { exports: {} };
 				return list;
 			};
 			try {
+				layer.actions = actions;
 				window[ACTIONS_KEY] = actions;
 				actionsOwner = layer === undefined ? actionsOwner : layer;
 				actionsInstalledFor = ctx;
@@ -5033,8 +4854,7 @@ var module = { exports: {} };
 		 * 侧边对话 over a source file is noise at best and a wrong-context action at
 		 * worst. The shared box is also only ever rendered for a transcript selection
 		 * (see the build-time patch on the annotation plugin) — this guard makes the
-		 * standalone quote button and the marker agree with that, so the right column
-		 * never grows a toolbar and never has the standalone button released either.
+		 * coordinator applies the same exclusion to annotation, quote and side chat.
 		 */
 		function isInRightSidebar(element) {
 			try {
@@ -5046,94 +4866,175 @@ var module = { exports: {} };
 			}
 		}
 
-		/** Whether a selection is active and inside the conversation transcript. */
-		function selectionState() {
-			try {
-				const selection = typeof document.getSelection === "function" ? document.getSelection() : null;
-				if (selection === null || selection.isCollapsed === true || selection.rangeCount === 0)
-					return { active: false, inTranscript: false };
-				const range = selection.getRangeAt(0);
-				const node = range.commonAncestorContainer;
-				const el = node instanceof Element ? node : (node !== null && node !== undefined ? node.parentElement : null);
-				const inTranscript = el !== null && el !== undefined && typeof el.closest === "function"
-					&& el.closest('[data-slot="conversation.session"]') !== null
-					&& !isInRightSidebar(el);
-				return { active: true, inTranscript };
-			}
-			catch (_) {
-				return { active: false, inTranscript: false };
-			}
+		/** One source of selection truth for annotation, quote and side chat. */
+		function selectionElement(node) {
+			return node?.nodeType === 1 ? node : node?.parentElement ?? null;
 		}
 
-		/**
-		 * Decide whether the standalone quote button must be hidden right now.
-		 *
-		 * The standalone button appears the instant a selection exists, while the shared
-		 * toolbar waits out the annotation plugin's settle (~120 ms) — so hiding it only
-		 * once the toolbar is up would let it flash at its own position first. Instead it
-		 * is hidden in the same turn as the selection, and shown again only if the shared
-		 * toolbar never arrives (grace), which keeps the cross-row fallback working.
-		 */
-		function refreshMarker() {
-			const bar = document.querySelector(`.${ANNOTATION_BAR_CLASS}`);
-			// The editor card counts as the toolbar being up: after 批注 the bar is gone but
-			// the standalone quote button must not pop back over the open card.
-			const card = document.querySelector(`.${ANNOTATION_CARD_CLASS}`);
-			const state = selectionState();
-			const waiting = state.active && state.inTranscript && (Date.now() - lastSelectionAt) < GRACE_MS;
-			// While the pointer is down the shared box deliberately waits for the release, so
-			// neither the box nor the grace window can justify hiding the standalone button —
-			// the hold itself must, or a pause mid-drag exposes it.
-			const hide = bar !== null || card !== null || waiting || isDragging();
-			const root = document.documentElement;
-			if (hide) {
-				if (!root.hasAttribute(HIDE_ATTR))
-					root.setAttribute(HIDE_ATTR, "1");
+		function chatRootOf(node) {
+			const element = selectionElement(node);
+			if (element === null || element.closest(SELECTION_EXCLUDED) !== null)
+				return null;
+			const transcript = element.closest('[data-slot="conversation.session"]');
+			if (transcript === null || isInRightSidebar(transcript))
+				return null;
+			let row = element;
+			while (row !== transcript && row !== null) {
+				if (row.hasAttribute('data-chat-flow-kind') || row.hasAttribute('data-chat-turn')) return row;
+				row = row.parentElement;
 			}
-			else if (root.hasAttribute(HIDE_ATTR)) {
-				root.removeAttribute(HIDE_ATTR);
-			}
-			diagnostics.barUp = bar !== null;
-			diagnostics.cardUp = card !== null;
-			diagnostics.quoteButtonHidden = hide;
-			return hide;
+			return transcript;
 		}
 
-		/** Runs inside the selectionchange turn: no frame may pass with both UIs up. */
-		function onSelectionChange(layer) {
-			try {
-				lastSelectionAt = Date.now();
-				refreshMarker();
-				diagnostics.selection = describeSelection();
-				persistDiagnostics();
-				armGraceRefresh();
+		function readChatSelection(ctx) {
+			const selection = document.getSelection();
+			if (selection === null || selection.isCollapsed || selection.rangeCount !== 1)
+				return { frame: null, collapsed: true };
+			const range = selection.getRangeAt(0);
+			const start = selectionElement(range.startContainer);
+			const end = selectionElement(range.endContainer);
+			const transcript = start?.closest('[data-slot="conversation.session"]');
+			if (!transcript || transcript !== end?.closest('[data-slot="conversation.session"]')
+				|| chatRootOf(start) === null || chatRootOf(end) === null)
+				return { frame: null, collapsed: false };
+			// Endpoints alone do not exclude an embedded editor/file between two messages.
+			for (const excluded of transcript.querySelectorAll(SELECTION_RANGE_EXCLUDED)) {
+				if (range.intersectsNode(excluded)) return { frame: null, collapsed: false };
 			}
-			catch (_) { /* diagnostics only */ }
+			const rawText = selection.toString();
+			if (rawText.trim() === '') return { frame: null, collapsed: true };
+			const startRoot = chatRootOf(start);
+			const root = startRoot === chatRootOf(end) ? startRoot : transcript;
+			const prefix = document.createRange();
+			prefix.selectNodeContents(root);
+			prefix.setEnd(range.startContainer, range.startOffset);
+			const offset = prefix.toString().length;
+			const full = root.textContent ?? '';
+			return { collapsed: false, frame: {
+				text: rawText.trim(), rawText, range: range.cloneRange(), root, transcript,
+				startNode: range.startContainer, endNode: range.endContainer,
+				startValue: range.startContainer.textContent, endValue: range.endContainer.textContent,
+				offset, before: full.slice(Math.max(0, offset - 24), offset),
+				after: full.slice(offset + rawText.length, offset + rawText.length + 24),
+				turn: root.getAttribute('data-chat-turn'),
+				anchorKey: root.getAttribute('data-chat-anchor-key') ?? root.getAttribute('data-focus-anchor-key'),
+				sessionId: currentSessionId(ctx), rect: range.getBoundingClientRect(), recovering: false,
+			} };
 		}
 
-		/**
-		 * Re-evaluate once the grace window closes: by then either the shared toolbar is
-		 * up (the marker stays) or it never came (the standalone button is released).
-		 * One timer per selection replaces polling for the whole window.
-		 */
-		function armGraceRefresh() {
-			try {
-				if (graceTimer !== null)
-					clearTimeout(graceTimer);
+		/** Re-anchor inside the same message (or transcript for a cross-message quote). */
+		function recoverSelectionRange(frame) {
+			let root = frame.root;
+			if (!root.isConnected) {
+				const transcripts = [...document.querySelectorAll('[data-slot="conversation.session"]')]
+					.filter(element => !isInRightSidebar(element));
+				if (transcripts.length !== 1) return null;
+				if (frame.turn === null) root = transcripts[0];
+				else {
+					const candidates = [...transcripts[0].querySelectorAll('[data-chat-turn]')]
+						.filter(row => row.getAttribute('data-chat-turn') === frame.turn
+							&& (frame.anchorKey === null || (row.getAttribute('data-chat-anchor-key') ?? row.getAttribute('data-focus-anchor-key')) === frame.anchorKey));
+					if (candidates.length !== 1) return null;
+					root = candidates[0];
+				}
 			}
-			catch (_) { /* no timers: the safety interval still re-evaluates */ }
-			try {
-				graceTimer = unrefTimer(setTimeout(() => {
-					graceTimer = null;
-					try {
-						refreshMarker();
+			if (!root) return null;
+			const full = root.textContent ?? '';
+			let offset = frame.offset;
+			if (full.slice(offset, offset + frame.rawText.length) !== frame.rawText
+				|| full.slice(Math.max(0, offset - frame.before.length), offset) !== frame.before
+				|| full.slice(offset + frame.rawText.length, offset + frame.rawText.length + frame.after.length) !== frame.after) {
+				const context = frame.before + frame.rawText + frame.after;
+				const found = full.indexOf(context);
+				if (found < 0 || full.indexOf(context, found + 1) >= 0) return null;
+				offset = found + frame.before.length;
+			}
+			const walker = document.createTreeWalker(root, window.NodeFilter.SHOW_TEXT);
+			let node; let cursor = 0; let start = null; let startOffset = 0;
+			while ((node = walker.nextNode()) !== null) {
+				const next = cursor + node.textContent.length;
+				if (start === null && offset < next) { start = node; startOffset = offset - cursor; }
+				if (start !== null && offset + frame.rawText.length <= next) {
+					const range = document.createRange();
+					range.setStart(start, startOffset);
+					range.setEnd(node, offset + frame.rawText.length - cursor);
+					if (chatRootOf(start) === null || chatRootOf(node) === null) return null;
+					for (const excluded of root.querySelectorAll(SELECTION_RANGE_EXCLUDED)) {
+						if (range.intersectsNode(excluded)) return null;
 					}
-					catch (_) { /* diagnostics only */ }
-				}, GRACE_MS));
+					return range;
+				}
+				cursor = next;
 			}
-			catch (_) {
-				graceTimer = null;
+			return null;
+		}
+
+		function clearSelectionFrame(layer, close = true) {
+			layer.selection = null;
+			window[QUOTE_API_KEY]?.clear();
+			if (close) closeSharedToolbar();
+		}
+
+		function selectionFrame(layer) {
+			if (layer.disposed || window[SELECTION_API_KEY] !== layer.selectionApi) return null;
+			if (layer.selection && currentSessionId(layer.context) !== layer.selection.sessionId)
+				clearSelectionFrame(layer);
+			return layer.selection;
+		}
+
+		/** Only disconnected/changed selected nodes qualify as a render loss. */
+		function onSelectionChange(layer) {
+			if (layer.disposed || window[SELECTION_API_KEY] !== layer.selectionApi) return;
+			if (document.querySelector(`.${ANNOTATION_CARD_CLASS}`) !== null) return;
+			if (selectionElement(document.activeElement)?.closest('[data-annotation-for-dsh]')) return;
+			const result = readChatSelection(layer.context);
+			const previous = selectionFrame(layer);
+			const renderLoss = previous && (!previous.startNode.isConnected || !previous.endNode.isConnected
+				|| previous.startNode.textContent !== previous.startValue || previous.endNode.textContent !== previous.endValue
+			);
+			// A render can shrink a cross-message range without collapsing it. The
+			// surviving fragment is not a new user selection; retain the full snapshot.
+			if (previous && (renderLoss && (result.frame !== null || result.collapsed)
+				|| result.collapsed && previous.recovering)) {
+				previous.recovering = true;
+				const recovered = recoverSelectionRange(previous);
+				if (recovered) previous.rect = recovered.getBoundingClientRect();
+			} else if (result.frame !== null) {
+				layer.selection = result.frame;
+			} else {
+				clearSelectionFrame(layer);
 			}
+			diagnostics.selection = describeSelection();
+			persistDiagnostics();
+		}
+
+		function installSelectionApi(layer) {
+			layer.selection = null;
+			layer.selectionSubscriptions = [];
+			layer.selectionApi = {
+				getSnapshot: () => selectionFrame(layer), rootOf: chatRootOf,
+				clear: () => clearSelectionFrame(layer, false),
+				rect: () => {
+					const frame = selectionFrame(layer);
+					if (!frame) return null;
+					const range = recoverSelectionRange(frame);
+					if (range) frame.rect = range.getBoundingClientRect();
+					return frame.rect;
+				},
+			};
+			window[SELECTION_API_KEY] = layer.selectionApi;
+			try {
+				for (const source of [layer.context?.get?.('uiSession')?.adapter?.current, layer.context?.sessions?.list]) {
+					const unsubscribe = source?.subscribe?.(() => selectionFrame(layer));
+					if (typeof unsubscribe === 'function') layer.selectionSubscriptions.push(unsubscribe);
+				}
+			} catch (_) { /* every action and the heartbeat still validate the session */ }
+		}
+
+		/** Observe UI ownership, without a second button or a hiding marker. */
+		function refreshToolbarState() {
+			diagnostics.barUp = document.querySelector(`.${ANNOTATION_BAR_CLASS}`) !== null;
+			diagnostics.cardUp = document.querySelector(`.${ANNOTATION_CARD_CLASS}`) !== null;
 		}
 
 		/**
@@ -5143,7 +5044,7 @@ var module = { exports: {} };
 		 * host itself is a direct child of <body>, so two childList observers cover every
 		 * appearance and disappearance; <head> is watched as well so a stylesheet removed
 		 * behind our back is noticed at once. If the host ever moves somewhere else, the
-		 * safety interval still keeps the marker honest.
+		 * safety interval still samples the UI state.
 		 */
 		function observeToolbar(layer) {
 			const body = document.body ?? document.documentElement;
@@ -5177,7 +5078,7 @@ var module = { exports: {} };
 					try {
 						sync();
 						ensureStylesheet(layer);
-						refreshMarker();
+						refreshToolbarState();
 					}
 					catch (_) { /* diagnostics only */ }
 				});
@@ -5195,9 +5096,11 @@ var module = { exports: {} };
 			};
 		}
 
-		/** Steady state: keep the marker honest and sample the environment occasionally. */
+		/** Steady state: validate ownership and sample the environment occasionally. */
 		function heartbeat(layer) {
 			try {
+				if (sidechatOperation !== null && !sidechatOperationActive(sidechatOperation))
+					cancelSidechatOperation();
 				// Self-heal: a hot swap can dispose the predecessor after the successor
 				// mounted, and its teardown may have taken shared resources away. Claiming
 				// ownership here keeps the live layer in charge of them.
@@ -5210,7 +5113,8 @@ var module = { exports: {} };
 					// moment the service shows up the hook is republished (the toolbar reads
 					// the list again on its next render).
 					installActions(layer.context, layer);
-				refreshMarker();
+				selectionFrame(layer);
+				refreshToolbarState();
 				const now = Date.now();
 				if (now - lastSampleAt >= SAMPLE_MS && diagnosticsAllowed()) {
 					lastSampleAt = now;
@@ -5224,13 +5128,14 @@ var module = { exports: {} };
 
 		/**
 		 * Mount the glue: publish the actions the toolbar renders, add the stylesheet,
-		 * and start the marker heartbeat. Safe to call before the vendored plugins mount.
+		 * and start the safety heartbeat. Safe to call before the vendored plugins mount.
 		 * @param ctx - cordis context carrying the injected client services.
 		 * @returns disposer that removes every trace of this bundle.
 		 */
 		function mountSelectionToolbar(ctx) {
-			const layer = { id: "dsh-selection-group", mountedAt: Date.now(), context: ctx };
+			const layer = { id: "dsh-selection-group", mountedAt: Date.now(), context: ctx, disposed: false };
 			installActions(ctx, layer);
+			installSelectionApi(layer);
 			ensureStylesheet(layer);
 			try {
 				document.documentElement.setAttribute(MARKER_ATTR, CLIENT_VERSION);
@@ -5254,36 +5159,60 @@ var module = { exports: {} };
 				window[DRAGGING_KEY] = isDragging;
 			}
 			catch (_) { /* a frozen window must not stop the bundle */ }
-			const onPointerDown = () => {
+			let pointerId = null;
+			const cancelGesture = event => {
+				if (window[SELECTION_API_KEY] !== layer.selectionApi) return;
+				setDragging(false); pointerId = null;
+				// Losing focus must not discard a note being edited in the annotation card.
+				const editing = document.querySelector('.' + ANNOTATION_CARD_CLASS) !== null;
+				clearSelectionFrame(layer, !editing || event?.key === 'Escape');
+			};
+			const onPointerDown = event => {
+				if (window[SELECTION_API_KEY] !== layer.selectionApi || (event.button ?? 0) !== 0 || event.isPrimary === false) return;
+				if (event.target?.closest?.('[data-annotation-for-dsh], [data-annotation-overlay], [data-annotation-num-layer]')) return;
+				if (document.querySelector('.' + ANNOTATION_CARD_CLASS)) return;
+				if (isDragging()) return; // pointerdown's compatibility mousedown is the same gesture
+				clearSelectionFrame(layer);
+				if (chatRootOf(event.target) === null) return;
+				pointerId = event.pointerId ?? null;
 				setDragging(true);
-				refreshMarker();
 			};
-			const onPointerUp = () => {
-				if (isDragging() === false)
-					return;
-				setDragging(false);
-				try {
-					if (typeof window.Event === "function")
-						document.dispatchEvent(new window.Event("selectionchange"));
-				}
-				catch (_) { /* the next selectionchange will paint instead */ }
+			const onPointerUp = event => {
+				if (window[SELECTION_API_KEY] !== layer.selectionApi || !isDragging()) return;
+				if (pointerId !== null && event.pointerId !== undefined && event.pointerId !== pointerId) return;
+				setDragging(false); pointerId = null;
+				document.dispatchEvent(new window.Event('selectionchange'));
 			};
-			document.addEventListener("pointerdown", onPointerDown, true);
-			document.addEventListener("pointerup", onPointerUp, true);
-			document.addEventListener("pointercancel", onPointerUp, true);
-			document.addEventListener("mousedown", onPointerDown, true);
-			document.addEventListener("mouseup", onPointerUp, true);
+			const onKeyDown = event => {
+				if (event.target?.closest?.('[data-annotation-for-dsh]')) return;
+				if (['Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)
+					|| event.key?.toLowerCase() === 'a' && (event.ctrlKey || event.metaKey)) cancelGesture(event);
+			};
+			const onVisibility = () => { if (document.hidden) cancelGesture(); };
+			document.addEventListener('pointerdown', onPointerDown, true);
+			document.addEventListener('mousedown', onPointerDown, true);
+			window.addEventListener('pointerup', onPointerUp, true);
+			window.addEventListener('mouseup', onPointerUp, true);
+			window.addEventListener('pointercancel', cancelGesture, true);
+			window.addEventListener('lostpointercapture', cancelGesture, true);
+			window.addEventListener('blur', cancelGesture);
+			document.addEventListener('visibilitychange', onVisibility);
+			document.addEventListener('keydown', onKeyDown, true);
 			let interval = null;
 			try {
 				interval = unrefTimer(setInterval(() => heartbeat(layer), TICK_MS));
 			}
-			catch (_) { /* without timers the toolbar still works; only the marker sleeps */ }
+			catch (_) { /* without timers the toolbar still works; only diagnostics stop sampling */ }
 			heartbeat(layer);
 			diagnostics.applied = true;
 			diagnostics.mountedAt = new Date().toISOString();
 			persistDiagnostics();
 
 			return () => {
+				if (layer.disposed) return;
+				layer.disposed = true;
+				if (sidechatOperation?.layer === layer)
+					cancelSidechatOperation();
 				try {
 					if (interval !== null)
 						clearInterval(interval);
@@ -5294,25 +5223,30 @@ var module = { exports: {} };
 				}
 				catch (_) { /* already gone */ }
 				stopObserving();
-				try {
-					document.removeEventListener("pointerdown", onPointerDown, true);
-					document.removeEventListener("pointerup", onPointerUp, true);
-					document.removeEventListener("pointercancel", onPointerUp, true);
-					document.removeEventListener("mousedown", onPointerDown, true);
-					document.removeEventListener("mouseup", onPointerUp, true);
+				for (const unsubscribe of layer.selectionSubscriptions.splice(0)) {
+					try { unsubscribe(); } catch (_) { /* service already gone */ }
 				}
+				try {
+					document.removeEventListener('pointerdown', onPointerDown, true);
+					document.removeEventListener('mousedown', onPointerDown, true);
+					window.removeEventListener('pointerup', onPointerUp, true);
+					window.removeEventListener('mouseup', onPointerUp, true);
+					window.removeEventListener('pointercancel', cancelGesture, true);
+					window.removeEventListener('lostpointercapture', cancelGesture, true);
+					window.removeEventListener('blur', cancelGesture);
+					document.removeEventListener('visibilitychange', onVisibility);
+					document.removeEventListener('keydown', onKeyDown, true);
+				}
+
 				catch (_) { /* already gone */ }
+				if (window[SELECTION_API_KEY] === layer.selectionApi) {
+					clearSelectionFrame(layer);
+					delete window[SELECTION_API_KEY];
+				}
 				liveLayers.delete(layer);
 				if (liveLayers.size === 0) {
-					try {
-						if (graceTimer !== null)
-							clearTimeout(graceTimer);
-					}
-					catch (_) { /* already gone */ }
-					graceTimer = null;
-					// The notice is page-wide and its timer would otherwise hold a test
-					// process open; an in-flight send is left to settle on its own (it holds
-					// no listener and its result only touches the diagnostics).
+					// Outstanding work was cancelled above, so no continuation can reopen
+					// a tab, write storage or a draft, or recreate this notice after dispose.
 					clearSidechatNotice();
 					sidechatRunning = false;
 				}
@@ -5321,7 +5255,6 @@ var module = { exports: {} };
 				// marker on the next tick).
 				if (liveLayers.size === 0) {
 					try {
-						document.documentElement.removeAttribute(HIDE_ATTR);
 						document.documentElement.removeAttribute(MARKER_ATTR);
 					}
 					catch (_) { /* already gone */ }
@@ -5359,7 +5292,7 @@ var module = { exports: {} };
 					styleOwner = null;
 				if (actionsOwner === layer) {
 					actionsOwner = null;
-					if (window[ACTIONS_KEY] !== undefined)
+					if (window[ACTIONS_KEY] === layer.actions)
 						delete window[ACTIONS_KEY];
 				}
 				diagnostics.applied = false;
@@ -5406,7 +5339,9 @@ var module = { exports: {} };
 		 * @param ctx - cordis context carrying the injected client services.
 		 * @returns disposer for everything this bundle mounted.
 		 */
+		const mergedStateKey = Symbol.for("dsh-selection-group.state");
 		function apply(ctx) {
+			globalThis[mergedStateKey]?.dispose();
 			// Diagnostics hooks go in before the plugins mount, so their own warnings and
 			// any mount failure get captured rather than guessed at.
 			initDiagnostics();
@@ -5448,11 +5383,16 @@ var module = { exports: {} };
 			// Record whether each half actually created its UI: an apply that early-returns
 			// (e.g. a predecessor still registered) reports as mounted but leaves nothing.
 			try {
-				vendoredMount.quoteUi = document.getElementById("dsh-quote-followup-btn") !== null;
+				vendoredMount.quoteApi = window.__DSH_SELECTION_GROUP_QUOTE__ !== undefined;
 				vendoredMount.annotationUi = document.querySelector("[data-annotation-for-dsh]") !== null;
 			}
 			catch (_) { /* diagnostics only */ }
+			let disposed = false;
+			const mergedState = {};
 			const dispose = () => {
+				if (disposed) return;
+				disposed = true;
+				if (globalThis[mergedStateKey] === mergedState) delete globalThis[mergedStateKey];
 				for (const entry of disposers) {
 					try {
 						entry();
@@ -5460,6 +5400,8 @@ var module = { exports: {} };
 					catch (_) { /* one failing disposer must not strand the others */ }
 				}
 			};
+			mergedState.dispose = dispose;
+			globalThis[mergedStateKey] = mergedState;
 			// cordis effect semantics: the callback runs NOW and its RETURN VALUE is the
 			// cleanup, so passing the disposer directly would dispose the plugin the
 			// instant it mounted (measured in the field: mountedAt + 1 ms). Mirror upstream quote.

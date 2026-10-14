@@ -8,7 +8,7 @@
  * either upstream package at runtime.
  */
 
-import { test } from 'node:test'
+import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -27,9 +27,13 @@ const HIDE_ATTR = 'data-dsh-selection-group-bar'
 const STYLE_ID = 'dsh-selection-group-style'
 const BAR_CLASS = 'dsh-ann-bar'
 
+const windows = []
+afterEach(() => { for (const window of windows.splice(0)) window.close() })
+
 function boot(html = HTML) {
   const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost/' })
   const { window } = dom
+  windows.push(window)
   let mod = null
   window.__ModuleLoader__ = {
     load: (registration) => {
@@ -78,8 +82,8 @@ test('one module mounts both inlined plugins plus the toolbar glue', async () =>
   // dsh-quote-followup's own UI, created by its inlined code (standalone button,
   // hidden only while the shared box is up).
   const quote = document.getElementById(QUOTE_ID)
-  assert.ok(quote !== null, 'the vendored quote plugin must create its button')
-  assert.ok(quote.className.includes('dsh-qf-btn'), "and it must be the plugin's own button class")
+  assert.equal(quote, null, 'the quote core has no standalone UI')
+  assert.equal(typeof window.__DSH_SELECTION_GROUP_QUOTE__?.run, 'function')
 
   // @changfenhuang/dsh-annotation's own UI, created by its inlined code.
   assert.ok(document.querySelector('[data-annotation-for-dsh]') !== null, 'the vendored annotation plugin must create its host')
@@ -101,24 +105,14 @@ test('one module mounts both inlined plugins plus the toolbar glue', async () =>
   window.close()
 })
 
-test('no DOM is moved: the standalone button is only hidden, never relocated', async () => {
+test('no independent quote button or CSS hiding rule is mounted', () => {
   const { window, document, mod } = boot()
   const dispose = mod.apply(stubContext())
-  await wait(120)
-
-  // The marker is absent without a toolbar, and the quote button keeps the
-  // parent the plugin gave it.
-  assert.equal(document.documentElement.hasAttribute(HIDE_ATTR), false)
-  const quote = document.getElementById(QUOTE_ID)
-  assert.equal(quote.parentElement, document.body)
-
+  assert.equal(document.getElementById(QUOTE_ID), null)
   const css = document.getElementById(STYLE_ID).textContent
-  assert.match(css, new RegExp(`html\\[${HIDE_ATTR}\\] #${QUOTE_ID}`))
-  assert.match(css, /display: none !important/)
-  assert.ok(!css.includes(BAR_CLASS), 'the shared toolbar is never targeted by this stylesheet')
-
+  assert.ok(!css.includes(QUOTE_ID))
+  assert.ok(!css.includes('display: none'))
   dispose()
-  window.close()
 })
 
 test('the merged bundle works with no upstream package present', () => {

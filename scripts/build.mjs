@@ -150,10 +150,9 @@ const banner = `/**
 ${extracted.map(({ name, meta }) => ` *   - ${name} v${meta.version} (inlined ${meta.license})`).join('\n')}
  *   - src/toolbar.js (this project's selection-toolbar glue)
  *
- * Both plugins' browser halves are inlined byte-for-byte, so this bundle works
- * with NEITHER package installed: it is the merge, not an adapter. The grouping
- * layer adopts the two floating toolbars into one pill and never adopts anything
- * it cannot place. See THIRD_PARTY_NOTICES.md for the upstream licences.
+ * Both browser halves are inlined with declared build-time patches. Annotation
+ * renders the sole toolbar; quote exposes native insertion without floating UI.
+ * Neither upstream package is needed at runtime. See THIRD_PARTY_NOTICES.md.
  *
  * @module dsh-selection-group/client
  */`
@@ -207,7 +206,9 @@ ${indented(glue, 2)}
 \t\t * @param ctx - cordis context carrying the injected client services.
 \t\t * @returns disposer for everything this bundle mounted.
 \t\t */
+\t\tconst mergedStateKey = Symbol.for("dsh-selection-group.state");
 \t\tfunction apply(ctx) {
+\t\t\tglobalThis[mergedStateKey]?.dispose();
 \t\t\t// Diagnostics hooks go in before the plugins mount, so their own warnings and
 \t\t\t// any mount failure get captured rather than guessed at.
 \t\t\tinitDiagnostics();
@@ -249,11 +250,16 @@ ${indented(glue, 2)}
 \t\t\t// Record whether each half actually created its UI: an apply that early-returns
 \t\t\t// (e.g. a predecessor still registered) reports as mounted but leaves nothing.
 \t\t\ttry {
-\t\t\t\tvendoredMount.quoteUi = document.getElementById("dsh-quote-followup-btn") !== null;
+\t\t\t\tvendoredMount.quoteApi = window.__DSH_SELECTION_GROUP_QUOTE__ !== undefined;
 \t\t\t\tvendoredMount.annotationUi = document.querySelector("[data-annotation-for-dsh]") !== null;
 \t\t\t}
 \t\t\tcatch (_) { /* diagnostics only */ }
+\t\t\tlet disposed = false;
+\t\t\tconst mergedState = {};
 \t\t\tconst dispose = () => {
+\t\t\t\tif (disposed) return;
+\t\t\t\tdisposed = true;
+\t\t\t\tif (globalThis[mergedStateKey] === mergedState) delete globalThis[mergedStateKey];
 \t\t\t\tfor (const entry of disposers) {
 \t\t\t\t\ttry {
 \t\t\t\t\t\tentry();
@@ -261,6 +267,8 @@ ${indented(glue, 2)}
 \t\t\t\t\tcatch (_) { /* one failing disposer must not strand the others */ }
 \t\t\t\t}
 \t\t\t};
+\t\t\tmergedState.dispose = dispose;
+\t\t\tglobalThis[mergedStateKey] = mergedState;
 \t\t\t// cordis effect semantics: the callback runs NOW and its RETURN VALUE is the
 \t\t\t// cleanup, so passing the disposer directly would dispose the plugin the
 \t\t\t// instant it mounted (measured in the field: mountedAt + 1 ms). Mirror upstream quote.

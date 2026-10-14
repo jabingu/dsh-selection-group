@@ -1,40 +1,27 @@
 /**
- * dsh-selection-toolbar glue — inlined by `scripts/build.mjs`, never registered
- * as a module of its own.
- *
- * ONE hover box, TWO actions. There is no second floating toolbar to move:
- *
- *   - `@changfenhuang/dsh-annotation`'s toolbar is the only selection UI. A
- *     build-time patch (`patches/dsh-annotation.json`) makes it render one extra
- *     button per action this glue injects through
- *     `window.__DSH_SELECTION_GROUP_ACTIONS__`.
- *   - The 引用 button's action simply clicks `dsh-quote-followup`'s own button.
- *     That plugin stays fully upstream (selection tracking, native reference
- *     chip, markdown fallback); only its floating button is hidden, and only
- *     while the shared box is on screen — so if the box ever fails to appear,
- *     引用 keeps working standalone instead of regressing.
- *
- * Nothing here moves DOM nodes, positions anything, or schedules frames: one
- * interval toggles a marker attribute and refreshes the diagnostics.
- *
- * `GROUP_VERSION`/`CLIENT_VERSION` is replaced by the build with the package
- * version.
+ * One selection coordinator and one three-action toolbar, including cross-message
+ * excerpts. Annotation owns the UI; quote is a headless native-insertion service.
+ * User dismissal clears the snapshot. DOM rendering loss preserves it for recovery.
+ * Built into client.js alongside hash-pinned vendor sources and declared patches.
  */
 
 //#region constants
 const CLIENT_VERSION = "__VERSION__";
 const STYLE_ID = "dsh-selection-group-style";
 const MARKER_ATTR = "data-dsh-selection-group";
-const HIDE_ATTR = "data-dsh-selection-group-bar";
+const SELECTION_API_KEY = "__DSH_SELECTION_GROUP_SELECTION__";
+const QUOTE_API_KEY = "__DSH_SELECTION_GROUP_QUOTE__";
+const SELECTION_RANGE_EXCLUDED = '[data-slot="sidebar"], [data-slot^="sidebar."], [data-textpreview-url], [data-textpreview-plain], [data-document-markdown], [data-code-preview], input, textarea, [contenteditable]:not([contenteditable="false"])';
+// Buttons cannot be selection endpoints, but copy/status controls between
+// messages must not veto a range whose endpoints are both conversation text.
+const SELECTION_EXCLUDED = `${SELECTION_RANGE_EXCLUDED}, button`;
 const ACTIONS_KEY = "__DSH_SELECTION_GROUP_ACTIONS__";
 /** Published by the patched annotation plugin: its own closeToolbar. */
 const CLOSE_KEY = "__DSH_SELECTION_GROUP_CLOSE__";
-const QUOTE_BUTTON_ID = "dsh-quote-followup-btn";
 const QUOTE_ACTION_ATTR = "data-dsh-selection-group-action";
 const ANNOTATION_HOST_SELECTOR = "[data-annotation-for-dsh]";
 const ANNOTATION_BAR_CLASS = "dsh-ann-bar";
 const ANNOTATION_CARD_CLASS = "dsh-ann-card";
-const QUOTE_NOTICE_ID = "dsh-quote-followup-notice";
 /**
  * The Side Chat surface this bundle talks to: `dsh-better-sidebar`'s own host
  * route and the tab type that owns the per-session Side Chat view.
@@ -66,6 +53,7 @@ const SIDECHAT_TAB_TYPE = "sidechat";
  * thread is reachable from the tab's own thread menu instead of automatically.
  */
 const SIDECHAT_LAST_THREAD_KEY = "dsh-sidebar:v1:sidechat-thread";
+const SIDECHAT_OPERATION_KEY = "__DSH_SELECTION_GROUP_SIDECHAT_OPERATION__";
 /** Max code points of the selection that is placed in the side chat. */
 const SIDECHAT_MAX_CHARS = 4000;
 /** Mark on the composer we filled, so a re-run can find the field we already own. */
@@ -132,24 +120,13 @@ function unrefTimer(timer) {
 	return timer;
 }
 
-/**
- * The toolbar is event-driven: `selectionchange` paints the marker in its own
- * turn, a MutationObserver follows the box appearing/disappearing, and a one-shot
- * timer covers the grace window. The interval below is only a safety net (self
- * healing, sampling, and any DOM change the observers cannot see), which took the
- * idle cost from ~110 DOM queries a second to about one.
- */
+/** The safety heartbeat samples diagnostics and validates service/session ownership. */
 const TICK_MS = 1000;
 const SAMPLE_MS = 1000;
-/**
- * How long a fresh transcript selection waits for the shared toolbar before the
- * standalone quote button is allowed back (it must not flash, but it must also
- * not stay hidden when the toolbar never arrives).
- */
-const GRACE_MS = 300;
+
 //#endregion
 
-//#region marker state
+//#region shared state
 /** Which layer most recently ensured the shared stylesheet / action hook exists. */
 let styleOwner = null;
 let actionsOwner = null;
@@ -158,14 +135,51 @@ let actionsInstalledFor = null;
 let actionsSidechatSeen = false;
 /** Layers currently mounted — a hot swap can have a successor live before the predecessor goes. */
 const liveLayers = new Set();
-/** When the current selection was last seen (for the grace window). */
-let lastSelectionAt = 0;
 /** When the environment was last sampled. */
 let lastSampleAt = 0;
-/** One-shot re-evaluation after a selection, so the marker is not polled for. */
-let graceTimer = null;
 /** 侧边对话: whether one send is in flight (a second press would ride over it). */
 let sidechatRunning = false;
+let sidechatOperation = null;
+
+function cancelSidechatOperation(operation = sidechatOperation) {
+	if (operation === null)
+		return;
+	operation.controller.abort();
+	for (const unsubscribe of operation.unsubscribers.splice(0)) {
+		try { unsubscribe(); } catch (_) { /* optional service already gone */ }
+	}
+	if (sidechatOperation === operation) {
+		sidechatOperation = null;
+		sidechatRunning = false;
+	}
+	if (window[SIDECHAT_OPERATION_KEY] === operation)
+		delete window[SIDECHAT_OPERATION_KEY];
+}
+
+function sidechatOperationActive(operation) {
+	return !operation.controller.signal.aborted && !operation.layer.disposed
+		&& actionsOwner === operation.layer && liveLayers.has(operation.layer)
+		&& window[ACTIONS_KEY] === operation.layer.actions
+		&& currentSessionId(operation.ctx) === operation.sessionId;
+}
+
+function checkSidechatOperation(operation) {
+	if (!sidechatOperationActive(operation)) {
+		cancelSidechatOperation(operation);
+		throw new window.DOMException("Side chat operation cancelled", "AbortError");
+	}
+}
+
+/** Stop waiting even when a service or a test double ignores AbortSignal. */
+function awaitSidechatOperation(promise, operation) {
+	checkSidechatOperation(operation);
+	return new Promise((resolve, reject) => {
+		const signal = operation.controller.signal;
+		const aborted = () => reject(new window.DOMException("Side chat operation cancelled", "AbortError"));
+		signal.addEventListener("abort", aborted, { once: true });
+		Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+	});
+}
 /**
  * 侧边对话's failure notice and its deadline. Both live here, not on the layer:
  * the notice outlives a hot swap's predecessor (the press that produced it may
@@ -187,10 +201,9 @@ const diagnostics = {
 	cardUp: false,
 	extraButtons: 0,
 	sampledAt: null,
-	quoteButtonPresent: null,
+	quoteReady: false,
 	annotationHostPresent: null,
 	actionsInstalled: false,
-	quoteButtonHidden: false,
 	stylePresent: null,
 	hookPresent: null,
 	diagnosticsMode: null,
@@ -603,7 +616,7 @@ function sampleEnvironment() {
 		diagnostics.transcripts = document.querySelectorAll('[data-slot="conversation.session"]').length;
 		diagnostics.flowRows = document.querySelectorAll("[data-chat-flow-kind]").length;
 		diagnostics.turnRows = document.querySelectorAll("[data-chat-turn]").length;
-		diagnostics.quoteButtonPresent = document.getElementById(QUOTE_BUTTON_ID) !== null;
+		diagnostics.quoteReady = window[QUOTE_API_KEY] !== undefined;
 		diagnostics.annotationHostPresent = document.querySelector(ANNOTATION_HOST_SELECTOR) !== null;
 		diagnostics.cardUp = document.querySelector(`.${ANNOTATION_CARD_CLASS}`) !== null;
 		diagnostics.extraButtons = document.querySelectorAll(`[${QUOTE_ACTION_ATTR}]`).length;
@@ -636,19 +649,7 @@ function initDiagnostics() {
 //#endregion
 
 //#region toolbar glue
-const styleText = () => [
-	// The shared box carries the 引用 action itself; hide the plugin's own
-	// floating button only while that box is on screen. `!important` beats the
-	// plugin's inline `display`, and a hidden button still fires `.click()`.
-	`html[${HIDE_ATTR}] #${QUOTE_BUTTON_ID} {`,
-	"  display: none !important;",
-	"}",
-	// The injected action reuses the plugin's own ghost-button look; this only
-	// keeps the two labels from colliding when they wrap on a narrow viewport.
-	`[${QUOTE_ACTION_ATTR}] {`,
-	"  white-space: nowrap;",
-	"}"
-].join("\n");
+const styleText = () => [`[${QUOTE_ACTION_ATTR}] { white-space: nowrap; }`].join("\n");
 
 /**
  * Insert the stylesheet if it is missing, and hand ownership to the caller.
@@ -697,7 +698,7 @@ function ctxIsEnglish(ctx) {
 	}
 }
 
-/** The 引用 action: hand the click to dsh-quote-followup's own button. */
+/** The 引用 action calls the native insertion service; no second UI exists. */
 function quoteAction(ctx) {
 	const english = ctxIsEnglish(ctx);
 	return {
@@ -707,30 +708,17 @@ function quoteAction(ctx) {
 			? "Quote the selection into the composer (repeatable; editable before sending)"
 			: "引用选中内容到输入框（可多次引用，发送前可编辑）",
 		run: () => {
-			const button = document.getElementById(QUOTE_BUTTON_ID);
-			if (button !== null && typeof button.click === "function")
-				button.click();
-			// The plugin shows a notice only when it could not insert (nothing pending,
-			// no composer, locked composer). Keep the box open in that case so the
-			// person can re-select and retry instead of losing the toolbar silently.
-			if (quoteNoticeText() !== "")
+			const quote = window[QUOTE_API_KEY];
+			if (!quote) {
+				showSidechatNotice(english ? 'Quote insertion is unavailable; reload the plugin.' : '引用插入服务不可用，请重新加载插件。');
 				return;
-			// Pressing 批注 replaces the box with the editor card; pressing 引用 must
-			// close it too, or the box lingers over the composer.
+			}
+			quote.capture();
+			if (quote.run() !== true) return;
+			// The quote core reports failures; only successful insertion closes the UI.
 			closeSharedToolbar();
 		}
 	};
-}
-
-/** The quote plugin's own failure notice text, empty when it reported no failure. */
-function quoteNoticeText() {
-	try {
-		const notice = document.getElementById(QUOTE_NOTICE_ID);
-		return notice === null ? "" : String(notice.textContent || "").trim();
-	}
-	catch (_) {
-		return "";
-	}
 }
 
 /** Ask the patched annotation plugin to close its toolbar (after 引用). */
@@ -812,15 +800,7 @@ function currentSessionId(ctx) {
 
 /** The text the person selected, trimmed, or "" when there is nothing usable. */
 function selectedTextNow() {
-	try {
-		const selection = typeof document.getSelection === "function" ? document.getSelection() : null;
-		if (selection === null || selection.isCollapsed === true || selection.rangeCount === 0)
-			return "";
-		return String(selection.toString() || "").trim();
-	}
-	catch (_) {
-		return "";
-	}
+	return window[SELECTION_API_KEY]?.getSnapshot()?.text ?? "";
 }
 
 /** Cap the inserted text; an empty excerpt never earns a side chat. */
@@ -879,27 +859,59 @@ async function readSidechatEnvelope(response) {
  * message. Nothing is sent, so this costs no tokens — the context is only
  * submitted once the person presses send.
  */
-async function prepareSideChat(ctx, sessionId) {
+async function prepareSideChat(ctx, sessionId, operation) {
+	checkSidechatOperation(operation);
 	if (typeof window.fetch !== "function")
 		return { ok: false, error: "this page has no fetch to reach the side chat route with" };
-	const response = await window.fetch(hostRoute(SIDECHAT_ROUTE), {
+	const response = await awaitSidechatOperation(window.fetch(hostRoute(SIDECHAT_ROUTE), {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ sessionId, question: "" })
-	});
-	const envelope = await readSidechatEnvelope(response);
+		body: JSON.stringify({ sessionId, question: "" }),
+		signal: operation.controller.signal
+	}), operation);
+	checkSidechatOperation(operation);
+	const envelope = await awaitSidechatOperation(readSidechatEnvelope(response), operation);
+	checkSidechatOperation(operation);
 	if (envelope.ok === false)
 		return { ok: false, error: envelope.error };
 	storeSidechatThread(sessionId, envelope.childId);
 	try {
-		sidebarService(ctx)?.openTab({ type: SIDECHAT_TAB_TYPE }, { sessionId });
+		const service = sidebarService(ctx);
+		if (service === null)
+			throw new Error("the sidebar service is no longer available");
+		const before = new Set(sidechatTabs(service, sessionId).map(tab => tab.id));
+		const opened = service.openTab({ type: SIDECHAT_TAB_TYPE, meta: { threadId: envelope.childId } }, { sessionId });
+		// createTab may ignore seed.meta. Bind its newly minted tab synchronously,
+		// before React mounts an autoCreate view and starts a second thread.
+		const created = sidechatTabs(service, sessionId).filter(tab => !before.has(tab.id));
+		if (created.length === 1 && typeof service.updateTab === "function")
+			service.updateTab(created[0].id, { meta: { ...created[0].meta, autoCreate: false, threadId: envelope.childId } }, sessionId);
+		await awaitSidechatOperation(opened, operation);
+		checkSidechatOperation(operation);
 	}
 	catch (error) {
+		if (operation.controller.signal.aborted)
+			throw error;
 		// The thread exists either way: the person reaches it from the workbench's
 		// thread menu, so an open failure is reported without undoing it.
 		return { ok: false, error: `the thread was created but its tab did not open: ${String((error !== null && error !== undefined && error.message) || error)}`, childId: envelope.childId };
 	}
 	return { ok: true, childId: envelope.childId };
+}
+
+/** Public sidebar snapshot, including split panes. Never retarget an existing tab. */
+function sidechatTabs(service, sessionId) {
+	const snapshot = service.getSnapshot?.();
+	if (snapshot?.sessionId !== sessionId)
+		return [];
+	const tabs = [];
+	const visit = node => {
+		if (node === null || typeof node !== "object") return;
+		if (Array.isArray(node.tabs)) tabs.push(...node.tabs.filter(tab => tab.type === SIDECHAT_TAB_TYPE));
+		if (Array.isArray(node.children)) node.children.forEach(visit);
+	};
+	visit(snapshot.state?.bottomSplits);
+	return tabs;
 }
 
 /**
@@ -944,8 +956,8 @@ function holdsSideChatSend(container) {
 /**
  * The Side Chat composer currently on screen.
  *
- * The neighbour gives consumers no draft API, so the composer is found
- * STRUCTURALLY — never by its hashed module class names
+ * The neighbour gives consumers no draft API. First verify its committed
+ * tab/scope props, then check the composer structure — never its hashed classes
  * (`_4BEzFa_sidechatComposerInput`), which a rebuild renames.
  *
  * The shape is the neighbour's (SideChatView's composer card):
@@ -973,11 +985,56 @@ function holdsSideChatSend(container) {
  * sharing an ancestor), so the CLOSEST textarea to the button wins — the nearest
  * common container. A page without a send button has no side chat composer.
  */
-function findSideChatComposer() {
+/**
+ * The neighbour exposes tab metadata through SideChatView's React props, but
+ * currently exposes neither a draft API nor DOM thread attributes. Read ONLY
+ * committed props (never pending/alternate props) to identify the owning tab.
+ * If that compatibility seam disappears, fail closed instead of pasting into
+ * another composer. No React state, fiber, or neighbour DOM is modified.
+ */
+function sidechatComposerOwner(field) {
+	const key = Object.getOwnPropertyNames(field).find(name => name.startsWith("__reactFiber$"));
+	if (key === undefined)
+		return null;
+	let fiber = field[key];
+	let root = fiber;
+	while (root?.return) root = root.return;
+	if (root?.stateNode?.current !== root) {
+		fiber = fiber?.alternate;
+		root = fiber;
+		while (root?.return) root = root.return;
+		if (root?.stateNode?.current !== root) return null;
+	}
+	for (let depth = 0; fiber && depth < 100; depth++, fiber = fiber.return) {
+		const props = fiber.memoizedProps;
+		if (props?.tab?.type === SIDECHAT_TAB_TYPE) {
+			return { sessionId: props.scope?.sessionId ?? props.sessionId,
+				childId: props.tab.meta?.threadId, visible: props.visible === true };
+		}
+	}
+	return null;
+}
+
+function findSideChatComposer(sessionId, childId) {
 	try {
 		let best = null;
 		let bestDistance = Number.POSITIVE_INFINITY;
 		for (const field of document.querySelectorAll("textarea")) {
+			if (!field.isConnected || field.disabled || field.readOnly
+				|| field.closest('[hidden], [aria-hidden="true"]') !== null)
+				continue;
+			const owner = sidechatComposerOwner(field);
+			if (owner === null || !owner.visible || owner.sessionId !== sessionId || owner.childId !== childId)
+				continue;
+			let hidden = false;
+			for (let node = field; node !== null; node = node.parentElement) {
+				const style = window.getComputedStyle(node);
+				if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") {
+					hidden = true;
+					break;
+				}
+			}
+			if (hidden) continue;
 			let container = field.parentElement;
 			for (let depth = 0; container !== null && container !== undefined && depth < 2; depth += 1) {
 				if (container !== (document.body ?? document.documentElement)) {
@@ -1053,21 +1110,35 @@ function prefillSideChatComposer(field, text) {
 }
 
 /** Wait for the tab's composer, polling briefly. Null means it never mounted. */
-function waitForSideChatComposer(timeoutMs) {
+function waitForSideChatComposer(timeoutMs, operation, childId) {
 	const pollMs = Math.max(1, Math.round(sidechatDraftPollMs() / 10));
 	const deadline = Date.now() + timeoutMs;
 	return new Promise((resolve) => {
+		let timer = null;
+		const signal = operation.controller.signal;
+		const finish = field => {
+			if (timer !== null) clearTimeout(timer);
+			signal.removeEventListener("abort", aborted);
+			resolve(field);
+		};
+		const aborted = () => finish(null);
+		signal.addEventListener("abort", aborted, { once: true });
 		const attempt = () => {
-			const field = findSideChatComposer();
+			if (!sidechatOperationActive(operation)) {
+				cancelSidechatOperation(operation);
+				finish(null);
+				return;
+			}
+			const field = findSideChatComposer(operation.sessionId, childId);
 			if (field !== null) {
-				resolve(field);
+				finish(field);
 				return;
 			}
 			if (Date.now() >= deadline) {
-				resolve(null);
+				finish(null);
 				return;
 			}
-			unrefTimer(setTimeout(attempt, pollMs));
+			timer = unrefTimer(setTimeout(attempt, pollMs));
 		};
 		attempt();
 	});
@@ -1166,7 +1237,7 @@ function clearSidechatNotice() {
  * until the person presses send themselves. A second press while one is in
  * flight is ignored rather than racing it.
  */
-function sideChatAction(ctx) {
+function sideChatAction(ctx, layer) {
 	const english = ctxIsEnglish(ctx);
 	return {
 		id: "sidechat",
@@ -1175,7 +1246,8 @@ function sideChatAction(ctx) {
 			? "Put the selection in a side conversation's composer, as plain text — it stays there until you send it"
 			: "把选中文字原样放进侧边对话的输入框，发送与否由你决定（不自动发出）",
 		run: () => {
-			if (sidechatRunning)
+			if (sidechatRunning || layer.disposed || actionsOwner !== layer || !liveLayers.has(layer)
+				|| window[ACTIONS_KEY] !== layer.actions)
 				return;
 			const text = selectedTextNow();
 			// The patched toolbar is only rendered for a live transcript selection;
@@ -1201,10 +1273,25 @@ function sideChatAction(ctx) {
 				return;
 			}
 			const insert = sidechatInsertText(truncateSidechatText(text));
+			const operation = { ctx, layer, sessionId, controller: new window.AbortController(), unsubscribers: [] };
+			operation.cancel = () => cancelSidechatOperation(operation);
+			window[SIDECHAT_OPERATION_KEY] = operation;
+			sidechatOperation = operation;
 			sidechatRunning = true;
-			prepareSideChat(ctx, sessionId).then(async (result) => {
+			// Cancel immediately on a session switch where subscriptions exist; the
+			// heartbeat and every async continuation also verify the captured session.
+			const onSession = () => {
+				if (!sidechatOperationActive(operation)) cancelSidechatOperation(operation);
+			};
+			try {
+				for (const source of [ctx.get?.("uiSession")?.adapter?.current, ctx.sessions?.list]) {
+					const unsubscribe = source?.subscribe?.(onSession);
+					if (typeof unsubscribe === "function") operation.unsubscribers.push(unsubscribe);
+				}
+			} catch (_) { /* older hosts use the heartbeat fallback */ }
+			prepareSideChat(ctx, sessionId, operation).then(async (result) => {
+				checkSidechatOperation(operation);
 				if (result.ok === false) {
-					sidechatRunning = false;
 					recordDiagnostics({
 						sidechatLast: "failed",
 						sidechatLastThread: result.childId ?? null,
@@ -1217,21 +1304,21 @@ function sideChatAction(ctx) {
 				}
 				// The tab mounts asynchronously (its view is a lazy chunk), so wait
 				// briefly for its composer before giving up on the prefill.
-				const field = await waitForSideChatComposer(sidechatDraftPollMs());
+				const field = await waitForSideChatComposer(sidechatDraftPollMs(), operation, result.childId);
+				checkSidechatOperation(operation);
 				if (field === null) {
-					sidechatRunning = false;
 					recordDiagnostics({
 						sidechatLast: "no-composer",
 						sidechatLastThread: result.childId,
-						sidechatLastError: "the side chat tab was opened but its composer never mounted"
+						sidechatLastError: "no editable composer bound to the created thread appeared"
 					});
 					showSidechatNotice(english
-						? `The side chat composer did not appear within ${(sidechatDraftPollMs() / 1000).toFixed(0)}s, so the quote was not placed. Open the bottom workbench and press the button again.`
-						: `侧边对话输入框在 ${(sidechatDraftPollMs() / 1000).toFixed(0)} 秒内没有出现，引用没有放进去。请先展开右侧底部工作台，再按一次。`);
+						? `The side chat composer did not appear for the target thread within ${(sidechatDraftPollMs() / 1000).toFixed(0)}s, or its thread identity could not be verified. The selection was not placed; check the workbench and sidebar compatibility.`
+						: `目标线程输入框在 ${(sidechatDraftPollMs() / 1000).toFixed(0)} 秒内没有出现，或无法确认所属线程；选中文字没有放进去。请检查工作台是否展开及侧边栏插件兼容性。`);
 					return;
 				}
-				const placed = prefillSideChatComposer(field, insert);
-				sidechatRunning = false;
+				// React may commit between resolving the poll and resuming this promise.
+				const placed = findSideChatComposer(sessionId, result.childId) === field && prefillSideChatComposer(field, insert);
 				recordDiagnostics({
 					sidechatLast: placed ? "inserted" : "no-composer",
 					sidechatLastThread: result.childId,
@@ -1243,11 +1330,12 @@ function sideChatAction(ctx) {
 						: "侧边对话输入框出现了，但没能写进去；选中文字没有放进去。");
 				}
 			}).catch((error) => {
-				sidechatRunning = false;
+				if (!sidechatOperationActive(operation))
+					return;
 				const message = String((error !== null && error !== undefined && error.message) || error);
 				recordDiagnostics({ sidechatLast: "failed", sidechatLastThread: null, sidechatLastError: message });
 				showSidechatNotice(english ? `Side chat failed: ${message}` : `侧边对话失败：${message}`);
-			});
+			}).finally(() => cancelSidechatOperation(operation));
 		}
 	};
 }
@@ -1255,6 +1343,11 @@ function sideChatAction(ctx) {
 
 /** Publish the actions the patched annotation toolbar renders. */
 function installActions(ctx, layer) {
+	const previous = window[SIDECHAT_OPERATION_KEY];
+	if (previous !== undefined && previous.layer !== layer)
+		previous.cancel();
+	if (sidechatOperation !== null && sidechatOperation.layer !== layer)
+		cancelSidechatOperation();
 	// Rebuilt on every render on purpose: the neighbour service can register
 	// after this bundle mounts, and a stale action list would then never grow its
 	// 侧边对话 button.
@@ -1262,7 +1355,7 @@ function installActions(ctx, layer) {
 		const list = [quoteAction(ctx)];
 		try {
 			if (sidechatAvailable(ctx))
-				list.push(sideChatAction(ctx));
+				list.push(sideChatAction(ctx, layer));
 		}
 		catch (error) {
 			diagnostics.lastError = `the 侧边对话 action could not be published: ${String((error !== null && error !== undefined && error.message) || error)}`;
@@ -1270,6 +1363,7 @@ function installActions(ctx, layer) {
 		return list;
 	};
 	try {
+		layer.actions = actions;
 		window[ACTIONS_KEY] = actions;
 		actionsOwner = layer === undefined ? actionsOwner : layer;
 		actionsInstalledFor = ctx;
@@ -1307,8 +1401,7 @@ function setDragging(value) {
  * 侧边对话 over a source file is noise at best and a wrong-context action at
  * worst. The shared box is also only ever rendered for a transcript selection
  * (see the build-time patch on the annotation plugin) — this guard makes the
- * standalone quote button and the marker agree with that, so the right column
- * never grows a toolbar and never has the standalone button released either.
+ * coordinator applies the same exclusion to annotation, quote and side chat.
  */
 function isInRightSidebar(element) {
 	try {
@@ -1320,94 +1413,175 @@ function isInRightSidebar(element) {
 	}
 }
 
-/** Whether a selection is active and inside the conversation transcript. */
-function selectionState() {
-	try {
-		const selection = typeof document.getSelection === "function" ? document.getSelection() : null;
-		if (selection === null || selection.isCollapsed === true || selection.rangeCount === 0)
-			return { active: false, inTranscript: false };
-		const range = selection.getRangeAt(0);
-		const node = range.commonAncestorContainer;
-		const el = node instanceof Element ? node : (node !== null && node !== undefined ? node.parentElement : null);
-		const inTranscript = el !== null && el !== undefined && typeof el.closest === "function"
-			&& el.closest('[data-slot="conversation.session"]') !== null
-			&& !isInRightSidebar(el);
-		return { active: true, inTranscript };
-	}
-	catch (_) {
-		return { active: false, inTranscript: false };
-	}
+/** One source of selection truth for annotation, quote and side chat. */
+function selectionElement(node) {
+	return node?.nodeType === 1 ? node : node?.parentElement ?? null;
 }
 
-/**
- * Decide whether the standalone quote button must be hidden right now.
- *
- * The standalone button appears the instant a selection exists, while the shared
- * toolbar waits out the annotation plugin's settle (~120 ms) — so hiding it only
- * once the toolbar is up would let it flash at its own position first. Instead it
- * is hidden in the same turn as the selection, and shown again only if the shared
- * toolbar never arrives (grace), which keeps the cross-row fallback working.
- */
-function refreshMarker() {
-	const bar = document.querySelector(`.${ANNOTATION_BAR_CLASS}`);
-	// The editor card counts as the toolbar being up: after 批注 the bar is gone but
-	// the standalone quote button must not pop back over the open card.
-	const card = document.querySelector(`.${ANNOTATION_CARD_CLASS}`);
-	const state = selectionState();
-	const waiting = state.active && state.inTranscript && (Date.now() - lastSelectionAt) < GRACE_MS;
-	// While the pointer is down the shared box deliberately waits for the release, so
-	// neither the box nor the grace window can justify hiding the standalone button —
-	// the hold itself must, or a pause mid-drag exposes it.
-	const hide = bar !== null || card !== null || waiting || isDragging();
-	const root = document.documentElement;
-	if (hide) {
-		if (!root.hasAttribute(HIDE_ATTR))
-			root.setAttribute(HIDE_ATTR, "1");
+function chatRootOf(node) {
+	const element = selectionElement(node);
+	if (element === null || element.closest(SELECTION_EXCLUDED) !== null)
+		return null;
+	const transcript = element.closest('[data-slot="conversation.session"]');
+	if (transcript === null || isInRightSidebar(transcript))
+		return null;
+	let row = element;
+	while (row !== transcript && row !== null) {
+		if (row.hasAttribute('data-chat-flow-kind') || row.hasAttribute('data-chat-turn')) return row;
+		row = row.parentElement;
 	}
-	else if (root.hasAttribute(HIDE_ATTR)) {
-		root.removeAttribute(HIDE_ATTR);
-	}
-	diagnostics.barUp = bar !== null;
-	diagnostics.cardUp = card !== null;
-	diagnostics.quoteButtonHidden = hide;
-	return hide;
+	return transcript;
 }
 
-/** Runs inside the selectionchange turn: no frame may pass with both UIs up. */
-function onSelectionChange(layer) {
-	try {
-		lastSelectionAt = Date.now();
-		refreshMarker();
-		diagnostics.selection = describeSelection();
-		persistDiagnostics();
-		armGraceRefresh();
+function readChatSelection(ctx) {
+	const selection = document.getSelection();
+	if (selection === null || selection.isCollapsed || selection.rangeCount !== 1)
+		return { frame: null, collapsed: true };
+	const range = selection.getRangeAt(0);
+	const start = selectionElement(range.startContainer);
+	const end = selectionElement(range.endContainer);
+	const transcript = start?.closest('[data-slot="conversation.session"]');
+	if (!transcript || transcript !== end?.closest('[data-slot="conversation.session"]')
+		|| chatRootOf(start) === null || chatRootOf(end) === null)
+		return { frame: null, collapsed: false };
+	// Endpoints alone do not exclude an embedded editor/file between two messages.
+	for (const excluded of transcript.querySelectorAll(SELECTION_RANGE_EXCLUDED)) {
+		if (range.intersectsNode(excluded)) return { frame: null, collapsed: false };
 	}
-	catch (_) { /* diagnostics only */ }
+	const rawText = selection.toString();
+	if (rawText.trim() === '') return { frame: null, collapsed: true };
+	const startRoot = chatRootOf(start);
+	const root = startRoot === chatRootOf(end) ? startRoot : transcript;
+	const prefix = document.createRange();
+	prefix.selectNodeContents(root);
+	prefix.setEnd(range.startContainer, range.startOffset);
+	const offset = prefix.toString().length;
+	const full = root.textContent ?? '';
+	return { collapsed: false, frame: {
+		text: rawText.trim(), rawText, range: range.cloneRange(), root, transcript,
+		startNode: range.startContainer, endNode: range.endContainer,
+		startValue: range.startContainer.textContent, endValue: range.endContainer.textContent,
+		offset, before: full.slice(Math.max(0, offset - 24), offset),
+		after: full.slice(offset + rawText.length, offset + rawText.length + 24),
+		turn: root.getAttribute('data-chat-turn'),
+		anchorKey: root.getAttribute('data-chat-anchor-key') ?? root.getAttribute('data-focus-anchor-key'),
+		sessionId: currentSessionId(ctx), rect: range.getBoundingClientRect(), recovering: false,
+	} };
 }
 
-/**
- * Re-evaluate once the grace window closes: by then either the shared toolbar is
- * up (the marker stays) or it never came (the standalone button is released).
- * One timer per selection replaces polling for the whole window.
- */
-function armGraceRefresh() {
-	try {
-		if (graceTimer !== null)
-			clearTimeout(graceTimer);
+/** Re-anchor inside the same message (or transcript for a cross-message quote). */
+function recoverSelectionRange(frame) {
+	let root = frame.root;
+	if (!root.isConnected) {
+		const transcripts = [...document.querySelectorAll('[data-slot="conversation.session"]')]
+			.filter(element => !isInRightSidebar(element));
+		if (transcripts.length !== 1) return null;
+		if (frame.turn === null) root = transcripts[0];
+		else {
+			const candidates = [...transcripts[0].querySelectorAll('[data-chat-turn]')]
+				.filter(row => row.getAttribute('data-chat-turn') === frame.turn
+					&& (frame.anchorKey === null || (row.getAttribute('data-chat-anchor-key') ?? row.getAttribute('data-focus-anchor-key')) === frame.anchorKey));
+			if (candidates.length !== 1) return null;
+			root = candidates[0];
+		}
 	}
-	catch (_) { /* no timers: the safety interval still re-evaluates */ }
-	try {
-		graceTimer = unrefTimer(setTimeout(() => {
-			graceTimer = null;
-			try {
-				refreshMarker();
+	if (!root) return null;
+	const full = root.textContent ?? '';
+	let offset = frame.offset;
+	if (full.slice(offset, offset + frame.rawText.length) !== frame.rawText
+		|| full.slice(Math.max(0, offset - frame.before.length), offset) !== frame.before
+		|| full.slice(offset + frame.rawText.length, offset + frame.rawText.length + frame.after.length) !== frame.after) {
+		const context = frame.before + frame.rawText + frame.after;
+		const found = full.indexOf(context);
+		if (found < 0 || full.indexOf(context, found + 1) >= 0) return null;
+		offset = found + frame.before.length;
+	}
+	const walker = document.createTreeWalker(root, window.NodeFilter.SHOW_TEXT);
+	let node; let cursor = 0; let start = null; let startOffset = 0;
+	while ((node = walker.nextNode()) !== null) {
+		const next = cursor + node.textContent.length;
+		if (start === null && offset < next) { start = node; startOffset = offset - cursor; }
+		if (start !== null && offset + frame.rawText.length <= next) {
+			const range = document.createRange();
+			range.setStart(start, startOffset);
+			range.setEnd(node, offset + frame.rawText.length - cursor);
+			if (chatRootOf(start) === null || chatRootOf(node) === null) return null;
+			for (const excluded of root.querySelectorAll(SELECTION_RANGE_EXCLUDED)) {
+				if (range.intersectsNode(excluded)) return null;
 			}
-			catch (_) { /* diagnostics only */ }
-		}, GRACE_MS));
+			return range;
+		}
+		cursor = next;
 	}
-	catch (_) {
-		graceTimer = null;
+	return null;
+}
+
+function clearSelectionFrame(layer, close = true) {
+	layer.selection = null;
+	window[QUOTE_API_KEY]?.clear();
+	if (close) closeSharedToolbar();
+}
+
+function selectionFrame(layer) {
+	if (layer.disposed || window[SELECTION_API_KEY] !== layer.selectionApi) return null;
+	if (layer.selection && currentSessionId(layer.context) !== layer.selection.sessionId)
+		clearSelectionFrame(layer);
+	return layer.selection;
+}
+
+/** Only disconnected/changed selected nodes qualify as a render loss. */
+function onSelectionChange(layer) {
+	if (layer.disposed || window[SELECTION_API_KEY] !== layer.selectionApi) return;
+	if (document.querySelector(`.${ANNOTATION_CARD_CLASS}`) !== null) return;
+	if (selectionElement(document.activeElement)?.closest('[data-annotation-for-dsh]')) return;
+	const result = readChatSelection(layer.context);
+	const previous = selectionFrame(layer);
+	const renderLoss = previous && (!previous.startNode.isConnected || !previous.endNode.isConnected
+		|| previous.startNode.textContent !== previous.startValue || previous.endNode.textContent !== previous.endValue
+	);
+	// A render can shrink a cross-message range without collapsing it. The
+	// surviving fragment is not a new user selection; retain the full snapshot.
+	if (previous && (renderLoss && (result.frame !== null || result.collapsed)
+		|| result.collapsed && previous.recovering)) {
+		previous.recovering = true;
+		const recovered = recoverSelectionRange(previous);
+		if (recovered) previous.rect = recovered.getBoundingClientRect();
+	} else if (result.frame !== null) {
+		layer.selection = result.frame;
+	} else {
+		clearSelectionFrame(layer);
 	}
+	diagnostics.selection = describeSelection();
+	persistDiagnostics();
+}
+
+function installSelectionApi(layer) {
+	layer.selection = null;
+	layer.selectionSubscriptions = [];
+	layer.selectionApi = {
+		getSnapshot: () => selectionFrame(layer), rootOf: chatRootOf,
+		clear: () => clearSelectionFrame(layer, false),
+		rect: () => {
+			const frame = selectionFrame(layer);
+			if (!frame) return null;
+			const range = recoverSelectionRange(frame);
+			if (range) frame.rect = range.getBoundingClientRect();
+			return frame.rect;
+		},
+	};
+	window[SELECTION_API_KEY] = layer.selectionApi;
+	try {
+		for (const source of [layer.context?.get?.('uiSession')?.adapter?.current, layer.context?.sessions?.list]) {
+			const unsubscribe = source?.subscribe?.(() => selectionFrame(layer));
+			if (typeof unsubscribe === 'function') layer.selectionSubscriptions.push(unsubscribe);
+		}
+	} catch (_) { /* every action and the heartbeat still validate the session */ }
+}
+
+/** Observe UI ownership, without a second button or a hiding marker. */
+function refreshToolbarState() {
+	diagnostics.barUp = document.querySelector(`.${ANNOTATION_BAR_CLASS}`) !== null;
+	diagnostics.cardUp = document.querySelector(`.${ANNOTATION_CARD_CLASS}`) !== null;
 }
 
 /**
@@ -1417,7 +1591,7 @@ function armGraceRefresh() {
  * host itself is a direct child of <body>, so two childList observers cover every
  * appearance and disappearance; <head> is watched as well so a stylesheet removed
  * behind our back is noticed at once. If the host ever moves somewhere else, the
- * safety interval still keeps the marker honest.
+ * safety interval still samples the UI state.
  */
 function observeToolbar(layer) {
 	const body = document.body ?? document.documentElement;
@@ -1451,7 +1625,7 @@ function observeToolbar(layer) {
 			try {
 				sync();
 				ensureStylesheet(layer);
-				refreshMarker();
+				refreshToolbarState();
 			}
 			catch (_) { /* diagnostics only */ }
 		});
@@ -1469,9 +1643,11 @@ function observeToolbar(layer) {
 	};
 }
 
-/** Steady state: keep the marker honest and sample the environment occasionally. */
+/** Steady state: validate ownership and sample the environment occasionally. */
 function heartbeat(layer) {
 	try {
+		if (sidechatOperation !== null && !sidechatOperationActive(sidechatOperation))
+			cancelSidechatOperation();
 		// Self-heal: a hot swap can dispose the predecessor after the successor
 		// mounted, and its teardown may have taken shared resources away. Claiming
 		// ownership here keeps the live layer in charge of them.
@@ -1484,7 +1660,8 @@ function heartbeat(layer) {
 			// moment the service shows up the hook is republished (the toolbar reads
 			// the list again on its next render).
 			installActions(layer.context, layer);
-		refreshMarker();
+		selectionFrame(layer);
+		refreshToolbarState();
 		const now = Date.now();
 		if (now - lastSampleAt >= SAMPLE_MS && diagnosticsAllowed()) {
 			lastSampleAt = now;
@@ -1498,13 +1675,14 @@ function heartbeat(layer) {
 
 /**
  * Mount the glue: publish the actions the toolbar renders, add the stylesheet,
- * and start the marker heartbeat. Safe to call before the vendored plugins mount.
+ * and start the safety heartbeat. Safe to call before the vendored plugins mount.
  * @param ctx - cordis context carrying the injected client services.
  * @returns disposer that removes every trace of this bundle.
  */
 function mountSelectionToolbar(ctx) {
-	const layer = { id: "dsh-selection-group", mountedAt: Date.now(), context: ctx };
+	const layer = { id: "dsh-selection-group", mountedAt: Date.now(), context: ctx, disposed: false };
 	installActions(ctx, layer);
+	installSelectionApi(layer);
 	ensureStylesheet(layer);
 	try {
 		document.documentElement.setAttribute(MARKER_ATTR, CLIENT_VERSION);
@@ -1528,36 +1706,60 @@ function mountSelectionToolbar(ctx) {
 		window[DRAGGING_KEY] = isDragging;
 	}
 	catch (_) { /* a frozen window must not stop the bundle */ }
-	const onPointerDown = () => {
+	let pointerId = null;
+	const cancelGesture = event => {
+		if (window[SELECTION_API_KEY] !== layer.selectionApi) return;
+		setDragging(false); pointerId = null;
+		// Losing focus must not discard a note being edited in the annotation card.
+		const editing = document.querySelector('.' + ANNOTATION_CARD_CLASS) !== null;
+		clearSelectionFrame(layer, !editing || event?.key === 'Escape');
+	};
+	const onPointerDown = event => {
+		if (window[SELECTION_API_KEY] !== layer.selectionApi || (event.button ?? 0) !== 0 || event.isPrimary === false) return;
+		if (event.target?.closest?.('[data-annotation-for-dsh], [data-annotation-overlay], [data-annotation-num-layer]')) return;
+		if (document.querySelector('.' + ANNOTATION_CARD_CLASS)) return;
+		if (isDragging()) return; // pointerdown's compatibility mousedown is the same gesture
+		clearSelectionFrame(layer);
+		if (chatRootOf(event.target) === null) return;
+		pointerId = event.pointerId ?? null;
 		setDragging(true);
-		refreshMarker();
 	};
-	const onPointerUp = () => {
-		if (isDragging() === false)
-			return;
-		setDragging(false);
-		try {
-			if (typeof window.Event === "function")
-				document.dispatchEvent(new window.Event("selectionchange"));
-		}
-		catch (_) { /* the next selectionchange will paint instead */ }
+	const onPointerUp = event => {
+		if (window[SELECTION_API_KEY] !== layer.selectionApi || !isDragging()) return;
+		if (pointerId !== null && event.pointerId !== undefined && event.pointerId !== pointerId) return;
+		setDragging(false); pointerId = null;
+		document.dispatchEvent(new window.Event('selectionchange'));
 	};
-	document.addEventListener("pointerdown", onPointerDown, true);
-	document.addEventListener("pointerup", onPointerUp, true);
-	document.addEventListener("pointercancel", onPointerUp, true);
-	document.addEventListener("mousedown", onPointerDown, true);
-	document.addEventListener("mouseup", onPointerUp, true);
+	const onKeyDown = event => {
+		if (event.target?.closest?.('[data-annotation-for-dsh]')) return;
+		if (['Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)
+			|| event.key?.toLowerCase() === 'a' && (event.ctrlKey || event.metaKey)) cancelGesture(event);
+	};
+	const onVisibility = () => { if (document.hidden) cancelGesture(); };
+	document.addEventListener('pointerdown', onPointerDown, true);
+	document.addEventListener('mousedown', onPointerDown, true);
+	window.addEventListener('pointerup', onPointerUp, true);
+	window.addEventListener('mouseup', onPointerUp, true);
+	window.addEventListener('pointercancel', cancelGesture, true);
+	window.addEventListener('lostpointercapture', cancelGesture, true);
+	window.addEventListener('blur', cancelGesture);
+	document.addEventListener('visibilitychange', onVisibility);
+	document.addEventListener('keydown', onKeyDown, true);
 	let interval = null;
 	try {
 		interval = unrefTimer(setInterval(() => heartbeat(layer), TICK_MS));
 	}
-	catch (_) { /* without timers the toolbar still works; only the marker sleeps */ }
+	catch (_) { /* without timers the toolbar still works; only diagnostics stop sampling */ }
 	heartbeat(layer);
 	diagnostics.applied = true;
 	diagnostics.mountedAt = new Date().toISOString();
 	persistDiagnostics();
 
 	return () => {
+		if (layer.disposed) return;
+		layer.disposed = true;
+		if (sidechatOperation?.layer === layer)
+			cancelSidechatOperation();
 		try {
 			if (interval !== null)
 				clearInterval(interval);
@@ -1568,25 +1770,30 @@ function mountSelectionToolbar(ctx) {
 		}
 		catch (_) { /* already gone */ }
 		stopObserving();
-		try {
-			document.removeEventListener("pointerdown", onPointerDown, true);
-			document.removeEventListener("pointerup", onPointerUp, true);
-			document.removeEventListener("pointercancel", onPointerUp, true);
-			document.removeEventListener("mousedown", onPointerDown, true);
-			document.removeEventListener("mouseup", onPointerUp, true);
+		for (const unsubscribe of layer.selectionSubscriptions.splice(0)) {
+			try { unsubscribe(); } catch (_) { /* service already gone */ }
 		}
+		try {
+			document.removeEventListener('pointerdown', onPointerDown, true);
+			document.removeEventListener('mousedown', onPointerDown, true);
+			window.removeEventListener('pointerup', onPointerUp, true);
+			window.removeEventListener('mouseup', onPointerUp, true);
+			window.removeEventListener('pointercancel', cancelGesture, true);
+			window.removeEventListener('lostpointercapture', cancelGesture, true);
+			window.removeEventListener('blur', cancelGesture);
+			document.removeEventListener('visibilitychange', onVisibility);
+			document.removeEventListener('keydown', onKeyDown, true);
+		}
+
 		catch (_) { /* already gone */ }
+		if (window[SELECTION_API_KEY] === layer.selectionApi) {
+			clearSelectionFrame(layer);
+			delete window[SELECTION_API_KEY];
+		}
 		liveLayers.delete(layer);
 		if (liveLayers.size === 0) {
-			try {
-				if (graceTimer !== null)
-					clearTimeout(graceTimer);
-			}
-			catch (_) { /* already gone */ }
-			graceTimer = null;
-			// The notice is page-wide and its timer would otherwise hold a test
-			// process open; an in-flight send is left to settle on its own (it holds
-			// no listener and its result only touches the diagnostics).
+			// Outstanding work was cancelled above, so no continuation can reopen
+			// a tab, write storage or a draft, or recreate this notice after dispose.
 			clearSidechatNotice();
 			sidechatRunning = false;
 		}
@@ -1595,7 +1802,6 @@ function mountSelectionToolbar(ctx) {
 		// marker on the next tick).
 		if (liveLayers.size === 0) {
 			try {
-				document.documentElement.removeAttribute(HIDE_ATTR);
 				document.documentElement.removeAttribute(MARKER_ATTR);
 			}
 			catch (_) { /* already gone */ }
@@ -1633,7 +1839,7 @@ function mountSelectionToolbar(ctx) {
 			styleOwner = null;
 		if (actionsOwner === layer) {
 			actionsOwner = null;
-			if (window[ACTIONS_KEY] !== undefined)
+			if (window[ACTIONS_KEY] === layer.actions)
 				delete window[ACTIONS_KEY];
 		}
 		diagnostics.applied = false;

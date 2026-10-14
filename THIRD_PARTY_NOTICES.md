@@ -13,7 +13,7 @@ halves are vendored verbatim under `vendor/` and inlined into the generated
 - Vendored file: `vendor/dsh-quote-followup.client.js`
 - SHA-256: `1b47ff6ef4330d9dddecb67c42951ad66ada29fbbcf298e71257ecc83c7c36cc`
 
-Provides the 「❐ 引用」 button: it quotes the selected transcript text into the
+Provides the 「❐ 引用」 insertion core: it quotes the selected transcript text into the
 composer as a native reference chip (plain markdown blockquote when the
 `inputTriggers` codec is unavailable).
 
@@ -32,63 +32,24 @@ per-annotation replies as hoverable chips.
 
 ## What this project adds
 
-`src/toolbar.js` (inlined as the “toolbar glue”) publishes the extra action the
-patched annotation toolbar renders, and hides `dsh-quote-followup`'s own floating
-button **only while that shared toolbar is on screen**. It moves no DOM nodes and
-starts no frames: one interval toggles a marker attribute and refreshes the
-diagnostics. No upstream file is modified; the vendored copies stay byte-identical
-to the published ones (asserted by `test/vendor.test.mjs`).
+`src/toolbar.js` coordinates one validated main-chat selection snapshot. The patched annotation client renders the sole toolbar, including cross-message excerpts. The patched quote client is a headless native-insertion service: floating-button creation, positioning, hiding and CSS are removed from the emitted body. Vendor inputs remain byte-identical and hash-pinned.
 
-## Deliberate deviations from upstream
+## Declared deviations
 
-Declared in `patches/`, applied at build time — the `vendor/` files themselves
-stay byte-identical to the published ones. `test/vendor.test.mjs` asserts every
-anchor matches exactly once and that every replacement reaches `client.js`:
+`patches/*.json` is the authoritative list. Every edit has a reason and an anchor that must match exactly once. Tests verify emitted replacements and absence of original anchors.
 
-1. **`accept-any-conversation-row`** (`@changfenhuang/dsh-annotation`): upstream
-   only offers its annotation toolbar for selections inside an *assistant* row.
-   This build also accepts any other conversation row (user, steering, tool
-   steps) within `[data-slot="conversation.session"]`, so both actions are
-   available for the same selection. Cross-row selections are still refused, as
-   upstream.
-2. **`immediate-toolbar`** / **`resync-excerpt-on-click`** (same package): the
-   toolbar is painted in the `selectionchange` turn (upstream waits for the
-   settle), and clicking 批注 re-syncs the excerpt from the live selection.
-3. **`settle-120ms`** (same package): upstream waits 250 ms after the selection
-   settles before painting its toolbar while the quote button is immediate; this
-   build waits 120 ms so the two read as one toolbar.
-3. **`bar-extra-actions`** (same package): the toolbar renders one extra button
-   per action published at `window.__DSH_SELECTION_GROUP_ACTIONS__` — this is the
-   merge. Each injected button carries `data-dsh-selection-group-action`.
-4. **`expose-close-hook`** (annotation): publishes the plugin's own `closeToolbar`
-   as `window.__DSH_SELECTION_GROUP_CLOSE__`, so the injected 引用 action closes the
-   box the way 批注 does. (A cleared selection does not close it by itself.)
-5. **`fail-loud-without-excerpt`** (`dsh-quote-followup`): a press with no pending
-   excerpt used to return silently; it now shows the plugin's own insert-failed
-   notice, which also lets the glue tell a no-op from a real insertion and keep its
-   box open for a retry.
-6. **`bar-extra-actions`** also wraps the injected-action loop in `try/catch`, so one
-   throwing action cannot abort the whole annotation toolbar render.
-7. **`mousedown-tolerates-merged-trigger`** (`dsh-quote-followup`): its
-   pointerdown guard must tolerate the injected button, otherwise pressing 引用
-   would discard the pending excerpt before the click lands.
+Annotation patches delegate scope and lifecycle to the coordinator, synchronize excerpt/root/button admission immediately, locate the current snapshot instead of another identical message, annotate cross-message or streaming snapshots, clear the snapshot on dismissal, and place the pending-annotation chip in a reserved row on the left inside the composer seat. When the row first grows, an existing tail scroll landing is preserved and geometry is settled after host layout; history readers retain their position. Deferred work is cancelled and owned padding is restored on hide, session change, composer replacement and disposal; queue clearance and viewport bounds are preserved.
 
-Everything else in both plugins is unmodified upstream code.
+Quote patches capture the same snapshot with native provenance rules, expose insertion/cancellation as an action API, preserve rendering-loss snapshots, report stale actions as failures, and remove standalone floating UI and its lifecycle. Error notices retain styling.
 
-## Updating a vendored plugin
+The generated plugin retires its previous mount before replacement, so competing selection bars cannot remain live. Disposers are idempotent and do not remove successor APIs.
 
-1. Replace the file under `vendor/` with the new published `client.js`.
-2. Update its `version` and `sha256` in `vendor/manifest.json`
-   (`shasum -a 256 vendor/<file>`), and refresh its `LICENSE.*` if it changed.
-3. `node scripts/build.mjs`
-4. `node --test test/*.test.mjs`
+## Updating upstream
 
-## Coupling without a patch
+Replace an original vendor input, update its version/sha256 and licence metadata, review every patch, then run `npm run build` and `npm test`. Do not hand-edit the generated bundle or silently normalize vendor bytes during hashing.
 
-`scripts/build.mjs` retires a predecessor's registered state before applying the
-vendored quote plugin, because that plugin early-returns while a previous state is
-registered and the predecessor's teardown would then remove its UI for good (a hot
-swap would leave 引用 dead until a restart). This reads the plugin's own
-`Symbol.for("dsh-quote-followup.state")`; `test/vendor.test.mjs` pins that the
-vendored file still registers exactly that symbol, so an upstream rename fails loudly
-instead of silently breaking the swap.
+## Side-chat compatibility
+
+The adapter uses public sidebar snapshot/update APIs and verifies committed React props through a read-only private fiber attachment because the sidebar has no draft API or DOM thread attributes. Unknown ownership fails visibly. No sidebar source is bundled or modified.
+
+Reference implementation: https://github.com/omdsh-dev/DSH-better-sidebar/blob/main/src/client/SideChatView.tsx and src/client/service.ts.

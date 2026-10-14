@@ -18,7 +18,7 @@ import { dirname, join, resolve } from 'node:path'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (relative) => readFileSync(join(root, relative), 'utf8')
 
-test('the vendored quote plugin still exposes the button id and its own show/hide', () => {
+test('the upstream quote UI remains a pinned patch input', () => {
   const source = read('vendor/dsh-quote-followup.client.js')
   assert.match(source, /BUTTON_ID\s*=\s*"dsh-quote-followup-btn"/, 'the singleton button id moved')
   assert.match(source, /getElementById\(BUTTON_ID\)/, 'the button is no longer looked up by id')
@@ -35,15 +35,19 @@ test('the vendored annotation plugin still renders its bar through ghostButton',
   assert.match(source, /host\.contains\(e\.target\)/, 'the own-UI pointer guard changed shape')
 })
 
-test('the glue only ever hides the standalone button — it never moves DOM', () => {
+test('one UI uses a quote action API without moving or hiding a second button', () => {
   const glue = read('src/toolbar.js')
-  // The architectural invariant: one hover box, no reparenting.
-  assert.ok(!glue.includes('insertBefore'), 'the glue must not reorder plugin nodes')
-  assert.ok(!glue.includes('appendChild(quote'), 'the glue must not adopt the plugin button')
-  assert.match(glue, /ACTIONS_KEY = "__DSH_SELECTION_GROUP_ACTIONS__"/, 'the action hook the patch reads')
-  assert.match(glue, /QUOTE_BUTTON_ID = "dsh-quote-followup-btn"/)
-  assert.match(glue, /HIDE_ATTR = "data-dsh-selection-group-bar"/)
-  assert.match(glue, /data-dsh-selection-group-action/, 'the attribute the patched button carries')
+  assert.ok(!glue.includes('insertBefore'))
+  assert.ok(!glue.includes('appendChild(quote'))
+  assert.match(glue, /QUOTE_API_KEY = "__DSH_SELECTION_GROUP_QUOTE__"/)
+  assert.ok(!glue.includes('QUOTE_BUTTON_ID'))
+  assert.ok(!glue.includes('HIDE_ATTR'))
+  assert.ok(!glue.includes('GRACE_MS'))
+  assert.ok(!glue.includes('display: none !important'))
+  const built = read('client.js')
+  assert.ok(!built.includes('const ensureButton ='), 'floating quote creation is removed from the emitted body')
+  assert.ok(!built.includes('const placeButton ='), 'there is no independent quote positioning')
+  assert.ok(!built.includes('const hideButton ='), 'there is no independent quote visibility lifecycle')
 })
 
 test('every constant the glue references is declared in the glue', () => {
@@ -64,7 +68,7 @@ test('every constant the glue references is declared in the glue', () => {
   //     this"; the real identifiers are CLIENT_VERSION and MARKER_ATTR.
   //   - Number.POSITIVE_INFINITY is a language built-in that happens to match the
   //     naming pattern (the bounded-distance search uses it as "no candidate yet").
-  const notGlueConstants = new Set(['GROUP_VERSION', 'POSITIVE_INFINITY'])
+  const notGlueConstants = new Set(['GROUP_VERSION', 'POSITIVE_INFINITY', 'SHOW_TEXT'])
   const undeclared = [...used].filter((name) => !declared.has(name) && !notGlueConstants.has(name))
   assert.deepEqual(undeclared, [], `the glue references constants it never declares: ${undeclared.join(', ')}`)
 })

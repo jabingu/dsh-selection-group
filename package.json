@@ -1,6 +1,6 @@
 {
   "name": "dsh-selection-group",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "description": "Selection Toolbar (dsh-selection-group): one self-contained DSH selection toolbar — a single hover box offering annotate, quote and side chat, with neither upstream plugin installed.",
   "icon": "./icon.svg",
   "type": "module",

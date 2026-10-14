@@ -8,7 +8,7 @@
 
 | 项目 | 当前版本 / 要求 |
 | --- | --- |
-| 插件 | `1.6.4`（包名：`dsh-selection-group`） |
+| 插件 | `1.6.5`（包名：`dsh-selection-group`） |
 | DSH | `>=0.2.0-rc.2` |
 | 许可证 | [MIT](./LICENSE) |
 

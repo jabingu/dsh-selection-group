@@ -896,25 +896,30 @@ test('a hot swap cancels its predecessor without blocking the successor', async 
 
 test('the real React composer waits for committed target-thread props and retains the controlled draft', async () => {
   const { window, document, mod } = boot()
-  const previous = { window: globalThis.window, document: globalThis.document }
-  globalThis.window = window; globalThis.document = document
-  const { createRoot } = await import('react-dom/client')
-  const { flushSync } = await import('react-dom')
-  const host = document.createElement('div'); document.body.appendChild(host)
-  const root = createRoot(host)
-  let setDraft; let observed = ''
-  function SideChatView({ scope, tab, visible }) {
-    const [draft, update] = React.useState('')
-    setDraft = update; observed = draft
-    return React.createElement('div', null,
-      React.createElement('textarea', { value: draft, onChange: event => update(event.target.value) }),
-      React.createElement('div', null, React.createElement('button', { title: 'Send' }, 'Send')))
-  }
-  const render = childId => flushSync(() => root.render(React.createElement(SideChatView, {
-    scope: { sessionId: 'session-test' }, tab: { type: 'sidechat', meta: { threadId: childId } }, visible: true,
-  })))
-  let dispose
+  // React DOM needs navigator even on Node 20, where there is no native one.
+  // Node 22+ exposes it through an accessor, so save/restore exact descriptors.
+  const browserGlobals = { window, document, navigator: window.navigator }
+  const previous = Object.fromEntries(Object.keys(browserGlobals)
+    .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
+  let dispose; let root; let flushSync
   try {
+    for (const [key, value] of Object.entries(browserGlobals))
+      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value })
+    const { createRoot } = await import('react-dom/client')
+    ;({ flushSync } = await import('react-dom'))
+    const host = document.createElement('div'); document.body.appendChild(host)
+    root = createRoot(host)
+    let setDraft; let observed = ''
+    function SideChatView({ scope, tab, visible }) {
+      const [draft, update] = React.useState('')
+      setDraft = update; observed = draft
+      return React.createElement('div', null,
+        React.createElement('textarea', { value: draft, onChange: event => update(event.target.value) }),
+        React.createElement('div', null, React.createElement('button', { title: 'Send' }, 'Send')))
+    }
+    const render = childId => flushSync(() => root.render(React.createElement(SideChatView, {
+      scope: { sessionId: 'session-test' }, tab: { type: 'sidechat', meta: { threadId: childId } }, visible: true,
+    })))
     render('old-thread')
     const field = host.querySelector('textarea')
     const { context } = stubContext({ sidebar: { openTab: () => window.setTimeout(() => render('target'), 80) } })
@@ -925,10 +930,18 @@ test('the real React composer waits for committed target-thread props and retain
     flushSync(() => setDraft(value => value + '!'))
     assert.equal(host.querySelector('textarea').value, 'my own question!', 'a subsequent React commit preserves the draft')
   } finally {
-    dispose?.(); flushSync(() => root.unmount())
-    if (previous.window === undefined) delete globalThis.window; else globalThis.window = previous.window
-    if (previous.document === undefined) delete globalThis.document; else globalThis.document = previous.document
+    try {
+      dispose?.()
+      if (root) flushSync(() => root.unmount())
+    } finally {
+      for (const [key, descriptor] of Object.entries(previous)) {
+        if (descriptor === undefined) delete globalThis[key]
+        else Object.defineProperty(globalThis, key, descriptor)
+      }
+    }
   }
+  for (const [key, descriptor] of Object.entries(previous))
+    assert.deepEqual(Object.getOwnPropertyDescriptor(globalThis, key), descriptor, `restore ${key}`)
 })
 
 test('an independently evaluated replacement bundle aborts the predecessor operation', async () => {

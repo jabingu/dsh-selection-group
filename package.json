@@ -54,7 +54,7 @@
     "verify": "node scripts/build.mjs --check && node --test test/*.test.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^22.19.0 || >=24.0.0"
   },
   "keywords": [
     "dsh",

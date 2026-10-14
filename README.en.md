@@ -69,7 +69,7 @@ The same actions work for selections spanning user and assistant messages.
 
 ## Development and verification
 
-Use Node.js 20 or later and run from the project directory:
+Use Node.js 22.19.0 or later within 22.x, or Node.js 24 or later, and run from the project directory:
 
 ```powershell
 npm install

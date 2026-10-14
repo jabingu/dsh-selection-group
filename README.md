@@ -69,7 +69,7 @@ dsh plugin --profile web add .
 
 ## 开发与验证
 
-使用 Node.js 20 或更高版本，在项目目录执行：
+使用 Node.js 22.19.0 或更新的 22.x，或 Node.js 24 及以上版本，在项目目录执行：
 
 ```powershell
 npm install

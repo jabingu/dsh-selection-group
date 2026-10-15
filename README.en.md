@@ -23,6 +23,12 @@ A selection toolbar plugin for [DeepSeek Harness](https://github.com/deepseek-ai
 
 Annotation and quote are bundled. Do not also enable independent instances of `@changfenhuang/dsh-annotation` or `dsh-quote-followup`, which can create duplicate UI or compete for state.
 
+## Demo
+
+![Selection Toolbar: a cross-message selection with Annotate, Quote and Side chat actions](https://github.com/jabingu/dsh-selection-group/releases/download/v1.6.5/selection-toolbar-demo-v1.6.5.png)
+
+Captured from a simulated conversation page running the actual v1.6.5 plugin client.
+
 ## Install
 
 ### From GitHub

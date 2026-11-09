@@ -912,7 +912,7 @@ test('a hot swap cancels its predecessor without blocking the successor', async 
   successor()
 })
 
-test('the real React composer waits for committed target-thread props and retains the controlled draft', async () => {
+test('the Better Sidebar 0.30.1 React composer accepts the draft after its target thread commits', async () => {
   const { window, document, mod } = boot()
   // React DOM needs navigator even on Node 20, where there is no native one.
   // Node 22+ exposes it through an accessor, so save/restore exact descriptors.
@@ -932,8 +932,10 @@ test('the real React composer waits for committed target-thread props and retain
       const [draft, update] = React.useState('')
       setDraft = update; observed = draft
       return React.createElement('div', null,
+        React.createElement('input', { type: 'file', hidden: true }),
         React.createElement('textarea', { value: draft, onChange: event => update(event.target.value) }),
-        React.createElement('div', null, React.createElement('button', { title: 'Send' }, 'Send')))
+        React.createElement('div', null, React.createElement('span', null,
+          React.createElement('button', { 'aria-label': '发送', disabled: draft === '' }))))
     }
     const render = childId => flushSync(() => root.render(React.createElement(SideChatView, {
       scope: { sessionId: 'session-test' }, tab: { type: 'sidechat', meta: { threadId: childId } }, visible: true,
@@ -960,6 +962,29 @@ test('the real React composer waits for committed target-thread props and retain
   }
   for (const [key, descriptor] of Object.entries(previous))
     assert.deepEqual(Object.getOwnPropertyDescriptor(globalThis, key), descriptor, `restore ${key}`)
+})
+
+test('the newer sidebar composer is found with a localized send label and a changed CSS hash', async () => {
+  const { window, document, mod } = boot()
+  const { context } = stubContext()
+  const calls = stubFetch(window, { childId: 'localized-thread' })
+  const field = mountSideChatComposer(document)
+  const send = field.parentElement.querySelector('button')
+  send.removeAttribute('title')
+  send.setAttribute('aria-label', '送信')
+  send.className = '_AnotherHash_sidechatSendBtn'
+  const tip = document.createElement('span')
+  send.replaceWith(tip)
+  tip.append(send)
+  const dispose = mod.apply(context)
+  try {
+    pressSidechat(window, document, { pollMs: 100 })
+    assert.ok(await waitFor(() => window.__DSH_SELECTION_GROUP__.sidechatLast === 'inserted'))
+    assert.equal(field.value, 'my own question')
+    assert.deepEqual(calls.map(call => call.body), [{ sessionId: 'session-test', question: '' }])
+  } finally {
+    dispose()
+  }
 })
 
 test('an independently evaluated replacement bundle aborts the predecessor operation', async () => {

@@ -914,77 +914,21 @@ function sidechatTabs(service, sessionId) {
 	return tabs;
 }
 
-/**
- * How deep the send button may sit below the textarea's own container.
- *
- * TWO is the neighbour's real shape: the field and the bar are siblings inside
- * the composer card, and the button is the BAR's direct child — one level below
- * the card. Scans that looked only at the container's direct children (or that
- * climbed further up looking for an ancestor that owns both) missed it entirely,
- * which is why this number exists and is measured against the real nesting.
- *
- * The button is still required to sit inside the very container that directly
- * holds the field, so nothing on the page can match from a distance.
- */
-const SIDECHAT_SEND_REACH = 2;
-
-/** The Side Chat send control (`sideChatSend` in that plugin's locales). */
-function isSideChatSendButton(element) {
-	if (element === null || element === undefined || typeof element.getAttribute !== "function")
-		return false;
-	const title = String(element.getAttribute("title") || "").trim();
-	return title === "发送" || title === "Send";
-}
-
-/** Whether one container holds the send button no deeper than {@link SIDECHAT_SEND_REACH}. */
+/** The send control lives in the field's card. Newer sidebars wrap it in a tooltip span. */
 function holdsSideChatSend(container) {
-	if (container === null || container === undefined)
-		return false;
-	for (const child of container.children) {
-		if (isSideChatSendButton(child))
+	if (container === null || container === document.body || container === document.documentElement) return false;
+	for (const button of container.querySelectorAll(':scope > button, :scope > * > button, :scope > * > span > button')) {
+		// The CSS module name is stable across translations; its build hash varies.
+		if ([...button.classList].some(name => name === 'sidechatSendBtn' || name.endsWith('_sidechatSendBtn')))
 			return true;
-	}
-	for (const child of container.children) {
-		for (const grandchild of child.children) {
-			if (isSideChatSendButton(grandchild))
-				return true;
+		for (const attribute of ['aria-label', 'title']) {
+			const label = button.getAttribute(attribute)?.trim();
+			if (label === '发送' || label === 'Send') return true;
 		}
 	}
 	return false;
 }
 
-/**
- * The Side Chat composer currently on screen.
- *
- * The neighbour gives consumers no draft API. First verify its committed
- * tab/scope props, then check the composer structure — never its hashed classes
- * (`_4BEzFa_sidechatComposerInput`), which a rebuild renames.
- *
- * The shape is the neighbour's (SideChatView's composer card):
- *
- *     <div class="…sidechatComposer">          ← the container: it directly holds…
- *       <textarea class="…sidechatComposerInput" />   ← …this field (distance 0)
- *       <div class="…sidechatComposerBar">            ← …and this bar (distance 1)
- *         <button title="发送" | "Send" />            ← whose child is the send button (distance 2)
- *       </div>
- *     </div>
- *
- * Four wrong walks came before it, and each one is a rule below:
- *
- *   1. "the container's first child is a button" — the first child is the TEXTAREA,
- *      so it matched nothing and every press timed out (the reported failure);
- *   2. "the button's `closest('div')` is the container" — that lands on the BAR,
- *      which holds no field;
- *   3. "climb until an ancestor CONTAINS the button" — it climbed past the
- *      boundary and wrote the selection into an unrelated textarea on the page;
- *   4. "the container must DIRECTLY own the button" — false for the real shape,
- *      because the button is the BAR's child, not the card's.
- *
- * So: from each textarea, the container that directly holds it must also hold the
- * send button within two levels. Several candidates can match (another textarea
- * sharing an ancestor), so the CLOSEST textarea to the button wins — the nearest
- * common container. A page without a send button has no side chat composer.
- */
 /**
  * The neighbour exposes tab metadata through SideChatView's React props, but
  * currently exposes neither a draft API nor DOM thread attributes. Read ONLY
@@ -1017,8 +961,6 @@ function sidechatComposerOwner(field) {
 
 function findSideChatComposer(sessionId, childId) {
 	try {
-		let best = null;
-		let bestDistance = Number.POSITIVE_INFINITY;
 		for (const field of document.querySelectorAll("textarea")) {
 			if (!field.isConnected || field.disabled || field.readOnly
 				|| field.closest('[hidden], [aria-hidden="true"]') !== null)
@@ -1026,6 +968,7 @@ function findSideChatComposer(sessionId, childId) {
 			const owner = sidechatComposerOwner(field);
 			if (owner === null || !owner.visible || owner.sessionId !== sessionId || owner.childId !== childId)
 				continue;
+			if (!holdsSideChatSend(field.parentElement)) continue;
 			let hidden = false;
 			for (let node = field; node !== null; node = node.parentElement) {
 				const style = window.getComputedStyle(node);
@@ -1034,29 +977,8 @@ function findSideChatComposer(sessionId, childId) {
 					break;
 				}
 			}
-			if (hidden) continue;
-			let container = field.parentElement;
-			for (let depth = 0; container !== null && container !== undefined && depth < 2; depth += 1) {
-				if (container !== (document.body ?? document.documentElement)) {
-					let ownsField = false;
-					for (const child of container.children) {
-						if (child === field) {
-							ownsField = true;
-							break;
-						}
-					}
-					if (ownsField && holdsSideChatSend(container)) {
-						const distance = depth + 1;
-						if (distance < bestDistance) {
-							best = field;
-							bestDistance = distance;
-						}
-					}
-				}
-				container = container.parentElement;
-			}
+			if (!hidden) return field;
 		}
-		return best;
 	}
 	catch (_) { /* an unreadable document means no composer */ }
 	return null;

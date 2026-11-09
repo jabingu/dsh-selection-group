@@ -89,7 +89,8 @@ test('the built bundle carries both plugins, with only the declared deviations a
       assert.ok(client.includes(`Fork deviations applied at build time: ${applied.join(', ')}`), `${name}: the deviation note is missing`)
   }
   assert.equal(client.match(/window\.__ModuleLoader__\.load\(/g)?.length, 1, 'the bundle must register exactly one module')
-  assert.ok(!/require\(\s*["']/.test(client), 'the bundle must not require any external module')
+  const hostModules = [...new Set([...client.matchAll(/require\(\s*["']([^"']+)["']/g)].map(match => match[1]))].sort()
+  assert.deepEqual(hostModules, ['@deepseek-ai/dsh-client-ui-primitives', 'react'], 'only DSH-owned UI modules may be requested')
 })
 
 test('every declared deviation is anchored, explained, and actually shipped', () => {

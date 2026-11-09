@@ -32,6 +32,12 @@ per-annotation replies as hoverable chips.
 
 ## What this project adds
 
+`src/settings.js` adds a plugin-detail preference that overrides only DSH's
+`conversation.chat.text-interaction` / `quote` seat with an empty renderer. It
+does not bundle or modify `@deepseek-ai/dsh-message-quotes`, its interaction
+registry, or its message-rendering rules. The preference UI reuses the React and
+Switch modules provided by DSH; no additional runtime npm dependency is installed.
+
 `src/toolbar.js` coordinates one validated main-chat selection snapshot. The patched annotation client renders the sole toolbar, including cross-message excerpts. The patched quote client is a headless native-insertion service: floating-button creation, positioning, hiding and CSS are removed from the emitted body. Vendor inputs remain byte-identical and hash-pinned.
 
 ## Declared deviations

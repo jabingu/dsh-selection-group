@@ -1849,6 +1849,29 @@ test('disposing before chip layout settles cancels the deferred scroll correctio
   assert.equal(document.querySelector('[data-annotation-chip]'), null)
 })
 
+test('disabling the built-in quote seat preserves the merged toolbar quote insertion', () => {
+  const { window, document, mod } = boot()
+  const { context, inserted } = stubContext()
+  const registrations = new Set()
+  context.slots = {
+    inject: (_name, callback) => callback(),
+    register: (options, component) => {
+      const entry = { options, component }; registrations.add(entry)
+      return () => registrations.delete(entry)
+    },
+  }
+  window.localStorage.setItem('dsh-selection-group.settings.v1', JSON.stringify({ disableNativeQuote: true }))
+  const dispose = mod.apply(context)
+  const nativeOverride = [...registrations].find(entry => entry.options.name === 'conversation.chat.text-interaction')
+  assert.equal(nativeOverride.component(), null)
+  select(window, 'user-line')
+  assert.equal(document.querySelectorAll(`.${BAR_CLASS}`).length, 1)
+  document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
+  assert.equal(JSON.parse(inserted[0].ref).text, 'my own question')
+  dispose()
+  assert.equal(registrations.size, 0)
+})
+
 test('single and cross-message selection always render the same sole three-action toolbar', async () => {
   const { window, document, mod } = boot()
   const dispose = mod.apply(stubContext().context)

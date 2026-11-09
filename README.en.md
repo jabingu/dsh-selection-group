@@ -29,6 +29,12 @@ Annotation and quote are bundled. Do not also enable independent instances of `@
 
 Captured from a simulated conversation page running the actual v1.6.5 plugin client.
 
+## Quote settings
+
+Open **Plugins → Selection Toolbar → Quote settings** and enable **Disable DSH built-in quote** to turn off the native “Quote text” selection action. This plugin's quote action and existing quotes in messages remain available.
+
+The switch is off by default. Settings are stored in the current client and restored after reloading. Turning it off or disabling the plugin restores the native action; re-enabling the plugin applies the saved preference.
+
 ## Install
 
 ### From GitHub
@@ -83,7 +89,7 @@ npm run build
 npm test
 ```
 
-All **115 automated tests pass**, covering cross-message selections, initial annotation layout and cleanup, cancellation and streaming recovery, side-chat ownership and plugin lifecycle. Annotation layout was also checked in Chrome fixtures matching the installed DSH sticky-composer structure, including normal and narrow windows and queues. The latest changes still require verification in the actual DSH app.
+All **130 automated tests pass**, covering quote preferences and restoration, cross-message selections, initial annotation layout and cleanup, cancellation and streaming recovery, side-chat ownership and plugin lifecycle. Annotation layout was also checked in Chrome fixtures matching the installed DSH sticky-composer structure, including normal and narrow windows and queues. The latest changes still require verification in the actual DSH app.
 
 `client.js` is generated from `src/`, `vendor/` and `patches/`; do not edit it by hand. `npm test` checks bundle consistency before running tests.
 

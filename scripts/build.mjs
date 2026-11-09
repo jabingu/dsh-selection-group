@@ -28,6 +28,7 @@ const read = (relative) => readFileSync(join(root, relative), 'utf8')
 const packageManifest = JSON.parse(read('package.json'))
 const vendors = JSON.parse(read('vendor/manifest.json'))
 const glueSource = read('src/toolbar.js')
+const settingsSource = read('src/settings.js')
 
 /** Fork deviations, keyed by vendored package name (see patches/*.json). */
 const patches = (() => {
@@ -149,6 +150,7 @@ const banner = `/**
  * GENERATED FILE — do not edit. \`node scripts/build.mjs\` rebuilds it from:
 ${extracted.map(({ name, meta }) => ` *   - ${name} v${meta.version} (inlined ${meta.license})`).join('\n')}
  *   - src/toolbar.js (this project's selection-toolbar glue)
+ *   - src/settings.js (plugin-detail preferences and native quote override)
  *
  * Both browser halves are inlined with declared build-time patches. Annotation
  * renders the sole toolbar; quote exposes native insertion without floating UI.
@@ -169,6 +171,10 @@ ${blocks.join('\n\n')}
 
 \t\t//#region selection-toolbar glue (src/toolbar.js)
 ${indented(glue, 2)}
+\t\t//#endregion
+
+\t\t//#region plugin detail settings (src/settings.js)
+${indented(settingsSource, 2)}
 \t\t//#endregion
 
 \t\t//#region plugin face
@@ -213,6 +219,8 @@ ${indented(glue, 2)}
 \t\t\t// any mount failure get captured rather than guessed at.
 \t\t\tinitDiagnostics();
 \t\t\tconst disposers = [];
+\t\t\tconst settings = mountNativeQuoteSettings(ctx);
+\t\t\tdisposers.push(() => settings.dispose());
 \t\t\tconst vendoredMount = {};
 \t\t\trecordDiagnostics({ context: describeContext(ctx), vendoredMount });
 \t\t\ttry {
@@ -279,7 +287,8 @@ ${indented(glue, 2)}
 
 \t\t/** Test seam: mount only the toolbar glue (used by test/toolbar.test.mjs). */
 \t\texports.__toolbar = mountSelectionToolbar;
-\t\texports.inject = ["sessions", "conversation", "locale", "uiSession", "inputTriggers"];
+\t\texports.__settings = mountNativeQuoteSettings;
+\t\texports.inject = ["sessions", "conversation", "locale", "uiSession", "inputTriggers", "slots"];
 \t\texports.apply = apply;
 \t\treturn module.exports;
 \t}

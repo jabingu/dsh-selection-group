@@ -2849,7 +2849,7 @@ window.__ModuleLoader__.load({
 
 		//#region vendored: dsh-quote-followup v0.2.10 (MIT, Copyright (c) 2026 tr1v3r)
 		// Inlined verbatim from https://github.com/tr1v3r/dsh-quote-followup — see THIRD_PARTY_NOTICES.md.
-		// Fork deviations applied at build time: headless-quote-capture, fail-loud-without-excerpt, headless-quote-lifecycle, headless-quote-cleanup, no-standalone-button, remove-floating-quote-helpers, clear-quote-without-dom, insert-quote-without-dom, locale-without-floating-button, cleanup-without-floating-button (see patches/).
+		// Fork deviations applied at build time: headless-quote-capture, bind-quote-to-selection-session, reuse-scoped-input-for-legacy-quote, prefer-dsh-native-quote, headless-quote-lifecycle, headless-quote-cleanup, no-standalone-button, remove-floating-quote-helpers, clear-quote-without-dom, locale-without-floating-button, cleanup-without-floating-button (see patches/).
 		// Body kept at column 0 so it stays byte-identical to the vendored file up to those deviations (asserted by test/vendor.test.mjs).
 		const vendoredQuote = ((require) => {
 var module = { exports: {} };
@@ -3078,14 +3078,14 @@ var module = { exports: {} };
 		 * phase/revision guards. Append at its published draft end (detect-text
 		 * offsets differ from clipboard-text lengths when a draft contains chips).
 		 */
-		const selectedSessionScope = (ctx) => {
+		const selectedSessionScope = (ctx, expectedSessionId) => {
 			const sessions = ctx?.get?.("sessions");
 			if (sessions === null || sessions === undefined)
 				return null;
 			const sessionId = selectedSessionId(ctx, sessions);
 			// No selected session is not a missing composer capability. Never paste
 			// unscoped text into a composer that may belong to another session.
-			if (sessionId === undefined || sessionId === null)
+			if (sessionId === undefined || sessionId === null || sessionId !== expectedSessionId)
 				return null;
 			// A binding is borrowed only for this synchronous edit; never retain it
 			// across a promise or a subsequent click after its generation may release.
@@ -3097,17 +3097,7 @@ var module = { exports: {} };
 			}
 			return sessions.scope?.(sessionId);
 		};
-		const appendQuoteChip = (scope, element, payload, t) => {
-			const conversation = scope.get?.("conversation");
-			if (typeof conversation?.input?.for !== "function")
-				return false;
-			let input;
-			try {
-				input = conversation.input.for(scope);
-			} catch (error) {
-				console.warn("[dsh-quote-followup] scoped composer unavailable", error);
-				return false;
-			}
+		const appendQuoteChip = (input, element, payload, t) => {
 			const state = input?.state?.getSnapshot?.();
 			if (state === undefined || typeof state.draftRev !== "number" || typeof input.insertReference !== "function")
 				return false;
@@ -3309,44 +3299,54 @@ var module = { exports: {} };
 			const endRow = messageRowOf(range.endContainer, transcript);
 			const sameRow = startRow !== null && startRow === endRow;
 			pendingQuote = { text: frame.text, role: sameRow ? detectRole(range, transcript) : null,
-				turn: sameRow ? detectTurn(range, transcript) : null, range: range.cloneRange() };
+				turn: sameRow ? detectTurn(range, transcript) : null, range: range.cloneRange(),
+				transcript, sessionId: frame.sessionId };
 		};
 		const onQuoteClick = () => {
 			if (pendingQuote === null) { showNotice("notice.insert-failed"); return; }
-			const quote = pendingQuote; // headless insertion
-			const composer = findComposer();
-			if (composer === null) {
-				restoreSelection(quote.range);
-				showNotice("notice.composer-missing");
-				return;
-			}
-			if (composer.disabled || composer.readOnly || composer.getAttribute("contenteditable") === "false" ||
-				(composer.isContentEditable === false && composer.tagName !== "TEXTAREA" && composer.tagName !== "INPUT")) {
-				restoreSelection(quote.range);
-				showNotice("notice.composer-locked");
-				return;
-			}
-			// Clear the transcript range BEFORE focusing the composer. Clearing after
-			// insertion destroys Lexical's caret and makes the next quote unreliable.
-			document.getSelection()?.removeAllRanges();
-			const payload = quotePayload(quote.text, quote.role, quote.turn);
+			const quote = pendingQuote;
+			let restoreRange = null;
 			try {
-				const scope = selectedSessionScope(clientContext);
-				const inserted = scope === null || scope === undefined
-					? null
-					: quoteSourceReady ? appendQuoteChip(scope, composer, payload, currentT) : false;
-				if (inserted === false)
-					appendToComposer(composer, quoteFrame(payload, currentT));
-				if (inserted === null) {
-					restoreSelection(quote.range);
-					showNotice("notice.insert-failed");
-					return;
+				const scope = selectedSessionScope(clientContext, quote.sessionId);
+				if (scope === null || scope === undefined) { showNotice("notice.insert-failed"); return; }
+				const resolver = scope.get?.("conversation")?.input;
+				const input = typeof resolver?.for === "function" ? resolver.for(scope) : undefined;
+				const actions = input?.actions;
+				if (typeof actions?.insertQuote === "function") {
+					if (actions.insertQuote(quote.text) !== true) { showNotice("notice.insert-failed"); return; }
+					// Focus may already have moved the DOM selection to the composer caret.
+					const selection = document.getSelection();
+					if (selection && quote.transcript.contains(selection.anchorNode)) selection.removeAllRanges();
+				} else {
+					const composer = findComposer();
+					if (composer === null) {
+						restoreSelection(quote.range);
+						showNotice("notice.composer-missing");
+						return;
+					}
+					if (composer.disabled || composer.readOnly || composer.getAttribute("contenteditable") === "false" ||
+						(composer.isContentEditable === false && composer.tagName !== "TEXTAREA" && composer.tagName !== "INPUT")) {
+						restoreSelection(quote.range);
+						showNotice("notice.composer-locked");
+						return;
+					}
+					// Clear the transcript range before focusing the legacy composer.
+					restoreRange = quote.range;
+					document.getSelection()?.removeAllRanges();
+					const payload = quotePayload(quote.text, quote.role, quote.turn);
+					const inserted = quoteSourceReady ? appendQuoteChip(input, composer, payload, currentT) : false;
+					if (inserted === null) {
+						restoreSelection(restoreRange);
+						showNotice("notice.insert-failed");
+						return;
+					}
+					if (inserted === false) appendToComposer(composer, quoteFrame(payload, currentT));
 				}
 				pendingQuote = null;
 				clearNotice();
 			} catch (error) {
 				console.warn("[dsh-quote-followup] quote insertion failed", error);
-				restoreSelection(quote.range);
+				restoreSelection(restoreRange);
 				showNotice("notice.insert-failed");
 			}
 		};

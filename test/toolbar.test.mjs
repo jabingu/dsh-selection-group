@@ -104,6 +104,10 @@ function stubContext(options = {}) {
     scope: (id) => ({ key: id, get: (name) => (name === 'conversation' ? { input: { for: () => inputApi } } : null) }),
     current: 'session-test',
   }
+  if (options.insertNativeQuote) {
+    inputApi.actions = { insertQuote: options.insertNativeQuote }
+    sessionsService.binding = (id) => ({ ctx: sessionsService.scope(id) })
+  }
   const sidebar = options.sidebar === undefined
     ? {
       version: '0.25.0',
@@ -333,7 +337,7 @@ test('the one hover box carries every action after a selection', async () => {
   window.close()
 })
 
-test('pressing 引用 runs dsh-quote-followup\'s own native-insertion path', async () => {
+test('pressing 引用 inserts a legacy reference when the native action is missing', async () => {
   const { window, document, mod } = boot()
   const { context, inserted } = stubContext()
   const dispose = mod.apply(context)
@@ -346,7 +350,7 @@ test('pressing 引用 runs dsh-quote-followup\'s own native-insertion path', asy
   const run = quote.run
   quote.run = () => { invoked++; return run() }
   document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
-  assert.equal(invoked, 1, 'the toolbar calls the native quote core directly')
+  assert.equal(invoked, 1, 'the toolbar calls its quote core directly')
   await wait(150)
 
   assert.equal(inserted.length, 1, "the plugin's own insert path must ask the session facade for one reference insertion")
@@ -354,6 +358,20 @@ test('pressing 引用 runs dsh-quote-followup\'s own native-insertion path', asy
 
   dispose()
   window.close()
+})
+
+test('legacy hosts without a quote source still receive the Markdown fallback', () => {
+  const { window, document, mod } = boot()
+  const { context, inserted } = stubContext()
+  const get = context.get
+  context.get = name => name === 'inputTriggers' ? null : get(name)
+  const dispose = mod.apply(context)
+  select(window, 'user-line')
+  document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
+  assert.match(document.getElementById('composer').textContent, /\n> my own question\n/u)
+  assert.equal(inserted.length, 0)
+  assert.equal(document.querySelector(`.${BAR_CLASS}`), null)
+  dispose()
 })
 
 //#region 侧边对话 (dsh-better-sidebar)
@@ -1849,9 +1867,12 @@ test('disposing before chip layout settles cancels the deferred scroll correctio
   assert.equal(document.querySelector('[data-annotation-chip]'), null)
 })
 
-test('disabling the built-in quote seat preserves the merged toolbar quote insertion', () => {
+test('disabling the built-in quote seat still lets the merged toolbar insert a native quote', () => {
   const { window, document, mod } = boot()
-  const { context, inserted } = stubContext()
+  const nativeQuotes = []
+  const { context, inserted } = stubContext({
+    insertNativeQuote: (text) => { nativeQuotes.push(text); return true },
+  })
   const registrations = new Set()
   context.slots = {
     inject: (_name, callback) => callback(),
@@ -1867,10 +1888,64 @@ test('disabling the built-in quote seat preserves the merged toolbar quote inser
   select(window, 'user-line')
   assert.equal(document.querySelectorAll(`.${BAR_CLASS}`).length, 1)
   document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
-  assert.equal(JSON.parse(inserted[0].ref).text, 'my own question')
+  assert.deepEqual(nativeQuotes, ['my own question'])
+  assert.equal(inserted.length, 0)
+  assert.equal(window.getSelection().rangeCount, 0)
+  assert.equal(document.querySelector(`.${BAR_CLASS}`), null)
   dispose()
   assert.equal(registrations.size, 0)
 })
+
+test('native quote insertion uses the scoped action without the legacy quote source and preserves the composer caret', () => {
+  const { window, document, mod } = boot()
+  const nativeQuotes = []
+  const { context } = stubContext({
+    insertNativeQuote: function insertQuote(text) {
+      assert.equal(this.insertQuote, insertQuote)
+      nativeQuotes.push(text)
+      const editor = document.getElementById('composer')
+      const range = document.createRange()
+      range.selectNodeContents(editor)
+      range.collapse(false)
+      window.getSelection().removeAllRanges()
+      window.getSelection().addRange(range)
+      return true
+    },
+  })
+  const get = context.get
+  context.get = name => name === 'inputTriggers' ? null : get(name)
+  const dispose = mod.apply(context)
+  select(window, 'user-line')
+  document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
+  assert.deepEqual(nativeQuotes, ['my own question'])
+  assert.equal(window.getSelection().anchorNode, document.getElementById('composer'))
+  assert.equal(document.querySelector(`.${BAR_CLASS}`), null)
+  dispose()
+})
+
+for (const throws of [false, true]) {
+  test(`native quote ${throws ? 'error' : 'rejection'} keeps the selection without falling back`, () => {
+    const { window, document, mod } = boot()
+    let calls = 0
+    const { context, inserted } = stubContext({
+      insertNativeQuote: () => {
+        calls++
+        if (throws) throw new Error('native edit failed')
+        return false
+      },
+    })
+    if (throws) window.console.warn = () => {}
+    const dispose = mod.apply(context)
+    select(window, 'user-line')
+    document.querySelector(`[${ACTION_ATTR}="quote"]`).click()
+    assert.equal(calls, 1)
+    assert.equal(inserted.length, 0)
+    assert.equal(window.getSelection().toString(), 'my own question')
+    assert.ok(document.getElementById(QUOTE_NOTICE_ID))
+    assert.ok(document.querySelector(`.${BAR_CLASS}`))
+    dispose()
+  })
+}
 
 test('single and cross-message selection always render the same sole three-action toolbar', async () => {
   const { window, document, mod } = boot()
@@ -2143,6 +2218,32 @@ test('cross-message streaming recovery still supports the sole toolbar and origi
   dispose()
 })
 
+test('native insertion quotes the full cross-message selection before and after a stream rerender', () => {
+  const { window, document, mod } = boot()
+  insertConversationControls(document)
+  const nativeQuotes = []
+  const { context, inserted } = stubContext({
+    insertNativeQuote: (text) => { nativeQuotes.push(text); return true },
+  })
+  const dispose = mod.apply(context)
+  const quoteButton = () => document.querySelector(`[${ACTION_ATTR}="quote"]`)
+
+  const originalText = selectAcrossMessages(window)
+  quoteButton().click()
+
+  assert.equal(selectAcrossMessages(window), originalText)
+  const answerRow = document.getElementById('assistant-line').parentElement
+  answerRow.replaceWith(answerRow.cloneNode(true))
+  document.getElementById('assistant-line').textContent = 'the assistant answer continued'
+  document.dispatchEvent(new window.Event('selectionchange'))
+  assert.equal(document.querySelectorAll(`.${BAR_CLASS}`).length, 1)
+  quoteButton().click()
+  assert.deepEqual(nativeQuotes, [originalText, originalText])
+  assert.equal(inserted.length, 0)
+  assert.equal(document.querySelector(`.${BAR_CLASS}`), null)
+  dispose()
+})
+
 test('streamed quote recovery also allows annotating the original excerpt', () => {
   const { window, document, mod } = boot()
   const dispose = mod.apply(stubContext().context)
@@ -2211,7 +2312,10 @@ test('window blur preserves an unsaved annotation note while releasing drag stat
 
 test('session change clears the selection snapshot before any stale quote action can run', () => {
   const { window, document, mod } = boot()
-  const { context, inserted } = stubContext()
+  const nativeQuotes = []
+  const { context, inserted } = stubContext({
+    insertNativeQuote: (text) => { nativeQuotes.push(text); return true },
+  })
   const original = context.get
   let sessionId = 'session-test'
   context.get = name => name === 'uiSession' ? { adapter: { current: { getSnapshot: () => ({ key: sessionId }) } } } : original(name)
@@ -2221,6 +2325,7 @@ test('session change clears the selection snapshot before any stale quote action
   sessionId = 'other-session'
   assert.equal(window.__DSH_SELECTION_GROUP_QUOTE__.run(), false, 'the insertion API also refuses a stale session snapshot')
   action.run()
+  assert.deepEqual(nativeQuotes, [])
   assert.equal(inserted.length, 0)
   assert.equal(document.querySelector(`.${BAR_CLASS}`), null)
   dispose()

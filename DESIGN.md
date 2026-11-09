@@ -29,9 +29,9 @@ DSH users working in Chinese or English. Other locales use the existing Chinese
 fallback policy. No Japan-specific business or locale contract is introduced.
 
 The user controls whether the native selection quote entry appears. The default
-preserves the host entry; enabling the preference suppresses only the keyed
-`conversation.chat.text-interaction` / `quote` renderer. Quote insertion and
-UserText quote display remain owned by their existing services.
+suppresses the keyed `conversation.chat.text-interaction` / `quote` renderer.
+A saved choice overrides the default. Quote insertion and UserText quote display
+remain owned by their existing services.
 
 ## Colors
 

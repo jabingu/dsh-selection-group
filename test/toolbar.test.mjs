@@ -1892,7 +1892,7 @@ test('disposing before chip layout settles cancels the deferred scroll correctio
   assert.equal(document.querySelector('[data-annotation-chip]'), null)
 })
 
-test('disabling the built-in quote seat still lets the merged toolbar insert a native quote', () => {
+test('suppressing the built-in quote seat by default still lets the toolbar insert a native quote', () => {
   const { window, document, mod } = boot()
   const nativeQuotes = []
   const { context, inserted } = stubContext({
@@ -1906,7 +1906,6 @@ test('disabling the built-in quote seat still lets the merged toolbar insert a n
       return () => registrations.delete(entry)
     },
   }
-  window.localStorage.setItem('dsh-selection-group.settings.v1', JSON.stringify({ disableNativeQuote: true }))
   const dispose = mod.apply(context)
   const nativeOverride = [...registrations].find(entry => entry.options.name === 'conversation.chat.text-interaction')
   assert.equal(nativeOverride.component(), null)

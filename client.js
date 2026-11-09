@@ -5238,8 +5238,8 @@ var module = { exports: {} };
 				title: "引用设置", label: "关闭 DSH 自带引用",
 				help: "关闭选中文字后的原生“引用文本”按钮。本插件的引用功能和消息中的引用显示仍可使用。",
 				on: "已关闭原生引用入口", off: "保留原生引用入口",
-				waiting: "设置已保存，原生引用入口加载后自动生效。",
-				saved: "设置已保存", readError: "无法读取设置，暂时保留原生引用入口。",
+				waiting: "原生引用入口加载后，开关将自动生效。",
+				saved: "设置已保存", readError: "无法读取设置，沿用当前状态。",
 				saveError: "无法保存设置，开关未更改。请重试。",
 				applyError: "无法应用设置，请重新加载插件后重试。",
 				unavailable: "当前 DSH 未提供设置所需的界面接口，请更新 DSH 后重试。",
@@ -5248,8 +5248,8 @@ var module = { exports: {} };
 				title: "Quote settings", label: "Disable DSH built-in quote",
 				help: "Turn off the native “Quote text” action shown after selecting text. This plugin’s quote action and existing quotes in messages remain available.",
 				on: "Built-in quote action disabled", off: "Built-in quote action enabled",
-				waiting: "Setting saved. It will apply when the built-in quote action loads.",
-				saved: "Setting saved", readError: "Settings could not be read. The built-in quote action is kept enabled.",
+				waiting: "This setting will take effect when the built-in quote action loads.",
+				saved: "Setting saved", readError: "Settings could not be read. The current state is kept.",
 				saveError: "Settings could not be saved. The switch was not changed. Try again.",
 				applyError: "Settings could not be applied. Reload the plugin and try again.",
 				unavailable: "This DSH version does not provide the required UI interface. Update DSH and try again.",
@@ -5263,17 +5263,18 @@ var module = { exports: {} };
 			const listeners = new Set();
 			let disposed = false;
 			let stopOverride = null;
-			let record = {};
+			let disableNativeQuote = false;
 			let error = null;
 			const language = () => {
 				try { return String(ctx.locale?.getSnapshot?.()?.active ?? "zh").startsWith("en") ? "en" : "zh"; }
 				catch (_) { return "zh"; }
 			};
-			try {
-				const value = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? "{}");
-				if (value && typeof value === "object" && !Array.isArray(value)) record = value;
-			} catch (_) { error = "readError"; }
-			let snapshot = { disableNativeQuote: record.disableNativeQuote === true, active: false, supported, language: language(), error, saved: false };
+			const readPreference = () => {
+				const record = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? "{}");
+				return record?.disableNativeQuote !== false;
+			};
+			try { disableNativeQuote = readPreference(); } catch (_) { error = "readError"; }
+			let snapshot = { disableNativeQuote, active: false, supported, language: language(), error, saved: false };
 			const publish = (changes = {}) => {
 				if (disposed) return;
 				snapshot = { ...snapshot, ...changes };
@@ -5344,8 +5345,7 @@ var module = { exports: {} };
 						let latest;
 						try { latest = JSON.parse(previousRaw ?? "{}"); } catch (_) { latest = {}; }
 						const base = latest && typeof latest === "object" && !Array.isArray(latest) ? latest : {};
-						record = { ...base, disableNativeQuote: value };
-						window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(record));
+						window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...base, disableNativeQuote: value }));
 					} catch (_) { publish({ error: "saveError", saved: false }); return false; }
 					snapshot = { ...snapshot, disableNativeQuote: value };
 					try { applyPreference(); }
@@ -5365,8 +5365,7 @@ var module = { exports: {} };
 			const onStorage = event => {
 				if (event.key !== SETTINGS_STORAGE_KEY && event.key !== null) return;
 				try {
-					const latest = JSON.parse(window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? "{}");
-					snapshot = { ...snapshot, disableNativeQuote: latest?.disableNativeQuote === true, saved: false };
+					snapshot = { ...snapshot, disableNativeQuote: readPreference(), saved: false };
 					applyPreference();
 					publish({ error: null });
 				} catch (_) { publish({ error: "readError", saved: false }); }

@@ -31,9 +31,9 @@ Captured from a simulated conversation page running the actual v1.6.5 plugin cli
 
 ## Quote settings
 
-Open **Plugins → Selection Toolbar → Quote settings** and enable **Disable DSH built-in quote** to turn off the native “Quote text” selection action. This plugin's quote action and existing quotes in messages remain available.
+**Disable DSH built-in quote** is on by default. The plugin hides the native “Quote text” action when you select text. The plugin’s quote action and existing quotes in messages remain available.
 
-The switch is off by default. Settings are stored in the current client and restored after reloading. Turning it off or disabling the plugin restores the native action; re-enabling the plugin applies the saved preference.
+To restore the native action, turn off the switch in **Plugins → Selection Toolbar → Quote settings**. The client remembers your choice after reloading. Disabling the plugin also restores the native action.
 
 ## Install
 

@@ -75,28 +75,28 @@ function setup({ stored, late = false, legacy = false } = {}) {
     setLanguage(value) { lang = value; for (const callback of localeListeners) callback() } }
 }
 
-test('native quote remains enabled by default and other interaction keys remain available', () => {
-  const { api, slots, native, translation, window } = setup()
-  assert.equal(api.getSnapshot().disableNativeQuote, false)
-  assert.equal(slots.renderer(NATIVE_SLOT, 'quote'), native)
+test('native quote is hidden by default and other interaction keys remain available', () => {
+  const { api, slots, translation, window } = setup()
+  assert.equal(api.getSnapshot().disableNativeQuote, true)
+  assert.equal(slots.renderer(NATIVE_SLOT, 'quote')(), null)
   assert.equal(slots.renderer(NATIVE_SLOT, 'translate'), translation)
   assert.equal(window.localStorage.getItem(KEY), null)
 })
 
-test('detail preference suppresses only the native quote renderer and persists across plugin mounts', () => {
+test('turning off suppression restores the native renderer and persists across plugin mounts', () => {
   const { api, slots, native, translation, window, context } = setup()
-  assert.equal(api.setDisableNativeQuote(true), true)
-  assert.equal(slots.renderer(NATIVE_SLOT, 'quote')(), null)
+  assert.equal(api.setDisableNativeQuote(false), true)
+  assert.equal(slots.renderer(NATIVE_SLOT, 'quote'), native)
   assert.equal(slots.renderer(NATIVE_SLOT, 'translate'), translation)
-  assert.equal(JSON.parse(window.localStorage.getItem(KEY)).disableNativeQuote, true)
+  assert.equal(JSON.parse(window.localStorage.getItem(KEY)).disableNativeQuote, false)
   api.dispose()
   assert.equal(slots.renderer(NATIVE_SLOT, 'quote'), native)
   let mod
   window.__ModuleLoader__.load = registration => { mod = registration.factory(() => { throw Error('UI modules must remain lazy') }) }
   window.eval(client)
   const next = mod.__settings(context); cleanups.push(() => next.dispose())
-  assert.equal(next.getSnapshot().disableNativeQuote, true)
-  assert.equal(slots.renderer(NATIVE_SLOT, 'quote')(), null)
+  assert.equal(next.getSnapshot().disableNativeQuote, false)
+  assert.equal(slots.renderer(NATIVE_SLOT, 'quote'), native)
 })
 
 test('switching off and repeated disposal restore native quoting without duplicate registrations', () => {
@@ -113,8 +113,9 @@ test('switching off and repeated disposal restore native quoting without duplica
   assert.equal(api.setDisableNativeQuote(true), false)
 })
 
-test('persisted suppression applies when the host registers its text interaction slot later', () => {
-  const { api, slots } = setup({ stored: JSON.stringify({ disableNativeQuote: true }), late: true })
+test('default suppression applies when the host registers its text interaction slot later', () => {
+  const { api, slots } = setup({ late: true })
+  assert.equal(api.getSnapshot().disableNativeQuote, true)
   assert.equal(api.getSnapshot().active, false)
   slots.mount(NATIVE_SLOT)
   assert.equal(api.getSnapshot().active, true)
@@ -140,7 +141,7 @@ test('a late host registration failure is reported without an uncaught callback 
 })
 
 test('a storage failure retains the previous switch state and native UI, and can be retried', () => {
-  const { api, slots, native, window } = setup()
+  const { api, slots, native, window } = setup({ stored: JSON.stringify({ disableNativeQuote: false }) })
   const original = window.Storage.prototype.setItem
   window.Storage.prototype.setItem = () => { throw Error('quota exceeded') }
   assert.equal(api.setDisableNativeQuote(true), false)
@@ -158,12 +159,13 @@ test('a storage failure retains the previous switch state and native UI, and can
 })
 
 test('a host registration failure rolls back the saved preference and can be retried', () => {
-  const { api, slots, native, window } = setup()
+  const stored = JSON.stringify({ disableNativeQuote: false })
+  const { api, slots, native, window } = setup({ stored })
   slots.failNative = true
   assert.equal(api.setDisableNativeQuote(true), false)
   assert.equal(api.getSnapshot().error, 'applyError')
   assert.equal(api.getSnapshot().disableNativeQuote, false)
-  assert.equal(window.localStorage.getItem(KEY), null)
+  assert.equal(window.localStorage.getItem(KEY), stored)
   assert.equal(slots.renderer(NATIVE_SLOT, 'quote'), native)
   slots.failNative = false
   assert.equal(api.setDisableNativeQuote(true), true)
@@ -177,16 +179,17 @@ test('malformed settings remain safe and are replaced by a successful user save'
   assert.equal(JSON.parse(window.localStorage.getItem(KEY)).disableNativeQuote, true)
 })
 
-test('cross-window preference changes and clearing storage restore native quoting', () => {
+test('cross-window preference changes preserve explicit choices and clearing storage restores the default', () => {
   const { api, slots, native, window } = setup()
-  window.localStorage.setItem(KEY, JSON.stringify({ disableNativeQuote: true, futureSetting: 42 }))
+  window.localStorage.setItem(KEY, JSON.stringify({ disableNativeQuote: false, futureSetting: 42 }))
   window.dispatchEvent(new window.StorageEvent('storage', { key: KEY }))
-  assert.equal(slots.renderer(NATIVE_SLOT, 'quote')(), null)
-  api.setDisableNativeQuote(false)
+  assert.equal(slots.renderer(NATIVE_SLOT, 'quote'), native)
+  api.setDisableNativeQuote(true)
   assert.equal(JSON.parse(window.localStorage.getItem(KEY)).futureSetting, 42)
+  api.setDisableNativeQuote(false)
   window.localStorage.removeItem(KEY)
   window.dispatchEvent(new window.StorageEvent('storage', { key: null }))
-  assert.equal(slots.renderer(NATIVE_SLOT, 'quote'), native)
+  assert.equal(slots.renderer(NATIVE_SLOT, 'quote')(), null)
 })
 
 test('older hosts without slots retain the toolbar behavior and never acquire an override', () => {
@@ -221,16 +224,17 @@ test('the real React detail panel toggles native quoting with an accessible save
   const { host, flushSync } = await mountPanel(fixture)
   const toggle = host.querySelector('[role="switch"]')
   assert.equal(toggle.getAttribute('aria-label'), '关闭 DSH 自带引用')
-  assert.equal(toggle.getAttribute('aria-checked'), 'false')
+  assert.equal(toggle.getAttribute('aria-checked'), 'true')
   assert.ok(fixture.document.getElementById(toggle.closest('[role="group"]').getAttribute('aria-describedby')))
   assert.match(toggle.title, /引用文本/)
+  flushSync(() => toggle.click())
+  assert.equal(toggle.getAttribute('aria-checked'), 'false')
+  assert.match(host.querySelector('[role="status"]').textContent, /设置已保存/)
+  assert.equal(fixture.slots.renderer(NATIVE_SLOT, 'quote'), fixture.native)
   flushSync(() => toggle.click())
   assert.equal(toggle.getAttribute('aria-checked'), 'true')
   assert.match(host.querySelector('[role="status"]').textContent, /已关闭/)
   assert.equal(fixture.slots.renderer(NATIVE_SLOT, 'quote')(), null)
-  flushSync(() => toggle.click())
-  assert.equal(toggle.getAttribute('aria-checked'), 'false')
-  assert.equal(fixture.slots.renderer(NATIVE_SLOT, 'quote'), fixture.native)
 })
 
 test('the detail panel uses the current locale and reports a failed save without flipping the switch', async () => {
@@ -241,7 +245,7 @@ test('the detail panel uses the current locale and reports a failed save without
   assert.equal(toggle.getAttribute('aria-label'), 'Disable DSH built-in quote')
   fixture.window.Storage.prototype.setItem = () => { throw Error('read-only storage') }
   flushSync(() => toggle.click())
-  assert.equal(toggle.getAttribute('aria-checked'), 'false')
+  assert.equal(toggle.getAttribute('aria-checked'), 'true')
   assert.match(host.querySelector('[role="alert"]').textContent, /could not be saved/)
 })
 

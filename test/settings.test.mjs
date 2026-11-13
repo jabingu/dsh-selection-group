@@ -7,13 +7,15 @@ import React from 'react'
 const client = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
 const KEY = 'dsh-selection-group.settings.v1'
 const NATIVE_SLOT = 'conversation.chat.text-interaction'
+const CONFIG_SLOT = 'plugins.bundle.config'
+const PACKAGE = 'dsh-selection-group'
 const cleanups = []
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() })
 
 // Implements the public keyed-seat contract: lower priority shadows the same key,
 // while other keys and their registration lifetimes remain independent.
 class Slots {
-  ready = new Set(['plugins.detail.section', NATIVE_SLOT])
+  ready = new Set([CONFIG_SLOT, NATIVE_SLOT])
   callbacks = new Set()
   entries = new Set()
   listeners = new Set()
@@ -109,7 +111,7 @@ test('switching off and repeated disposal restore native quoting without duplica
   }
   api.dispose(); api.dispose()
   assert.equal(slots.callbacks.size, 0)
-  assert.equal([...slots.entries].filter(entry => entry.options.name === 'plugins.detail.section').length, 0)
+  assert.equal(slots.renderer(CONFIG_SLOT, PACKAGE), undefined)
   assert.equal(api.setDisableNativeQuote(true), false)
 })
 
@@ -199,7 +201,7 @@ test('older hosts without slots retain the toolbar behavior and never acquire an
   assert.equal(slots.renderer(NATIVE_SLOT, 'quote'), native)
 })
 
-async function mountPanel(fixture, subject = { kind: 'bundle', pkg: { name: 'dsh-selection-group' } }) {
+async function mountPanel(fixture, packageName = PACKAGE) {
   const { window, document, slots } = fixture
   const descriptors = Object.fromEntries(['window', 'document', 'navigator'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   for (const [key, value] of Object.entries({ window, document, navigator: window.navigator }))
@@ -214,8 +216,8 @@ async function mountPanel(fixture, subject = { kind: 'bundle', pkg: { name: 'dsh
       if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]
     } }
   })
-  const Section = [...slots.entries].find(entry => entry.options.name === 'plugins.detail.section').component
-  flushSync(() => root.render(React.createElement(Section, { subject })))
+  const Panel = slots.renderer(CONFIG_SLOT, packageName)
+  flushSync(() => root.render(Panel ? React.createElement(Panel, { view: 'page' }) : null))
   return { host, flushSync }
 }
 
@@ -249,8 +251,10 @@ test('the detail panel uses the current locale and reports a failed save without
   assert.match(host.querySelector('[role="alert"]').textContent, /could not be saved/)
 })
 
-test('the preference panel is absent from another plugin detail page', async () => {
+test('quote settings register once under the Selection Toolbar bundle configuration key', async () => {
   const fixture = setup()
-  const { host } = await mountPanel(fixture, { kind: 'bundle', pkg: { name: 'another-plugin' } })
+  assert.equal(typeof fixture.slots.renderer(CONFIG_SLOT, PACKAGE), 'function')
+  assert.equal([...fixture.slots.entries].filter(entry => entry.options.name.startsWith('plugins.')).length, 1)
+  const { host } = await mountPanel(fixture, 'another-plugin')
   assert.equal(host.textContent, '')
 })

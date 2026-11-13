@@ -5231,6 +5231,7 @@ var module = { exports: {} };
 		/** Plugin-detail preferences and an owned override of DSH's native quote seat. */
 		const SETTINGS_STORAGE_KEY = "dsh-selection-group.settings.v1";
 		const NATIVE_QUOTE_SLOT = "conversation.chat.text-interaction";
+		const SETTINGS_SLOT = "plugins.bundle.config";
 		const SETTINGS_PACKAGE = "dsh-selection-group";
 
 		const settingsMessages = {
@@ -5397,18 +5398,13 @@ var module = { exports: {} };
 						style: { margin: "10px 0 0", minHeight: "1.5em", fontSize: 12, lineHeight: 1.5,
 							color: state.error ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-secondary)" } }, description));
 			}
-			function SettingsSection({ subject }) {
-				const matches = subject?.kind === "bundle" && subject.pkg?.name === SETTINGS_PACKAGE
-					|| subject?.kind === "row" && subject.row?.moduleName === SETTINGS_PACKAGE;
-				return matches ? require("react").createElement(SettingsPanel) : null;
-			}
 			let stopDetails;
 			const detailRegistrations = new Set();
 			if (supported) {
 				try {
-					stopDetails = slots.inject("plugins.detail.section", () => {
+					stopDetails = slots.inject(SETTINGS_SLOT, () => {
 						if (disposed) return;
-						const unregister = slots.register({ name: "plugins.detail.section", id: `${SETTINGS_PACKAGE}.settings` }, SettingsSection);
+						const unregister = slots.register({ name: SETTINGS_SLOT, key: SETTINGS_PACKAGE }, SettingsPanel);
 						let active = true;
 						const stop = () => { if (!active) return; active = false; detailRegistrations.delete(stop); if (typeof unregister === "function") unregister(); };
 						detailRegistrations.add(stop);

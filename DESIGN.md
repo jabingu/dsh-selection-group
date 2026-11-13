@@ -47,9 +47,9 @@ accessible names, and status messages change together with the host locale.
 
 ## Layout
 
-The plugin details slot owns placement and scrolling. A flexible text column and
-the host Switch share a row; help wraps at narrow widths. There is no fixed
-height, page-level scroll override, or modal. A status line reserves 1.5em.
+DSH places bundle configuration below the description and above source information.
+A flexible text column and the host Switch share a row. Help wraps at narrow
+widths, and a status line reserves 1.5em.
 
 ## Elevation & Depth
 
@@ -63,8 +63,8 @@ pointer, keyboard, focus-visible, and disabled states belong to the host.
 
 ## Components
 
-Canonical form owner: the DSH Switch, rendered in `plugins.detail.section` and
-filtered to this package/row. `src/settings.js` is the sole preference store and
+The panel uses the DSH Switch and registers under the package name in
+`plugins.bundle.config`. `src/settings.js` is the sole preference store and
 native-seat adapter. Saves are synchronous and require no artificial spinner.
 The label is “关闭 DSH 自带引用” / “Disable DSH built-in quote”.
 
@@ -74,10 +74,9 @@ allowed. Host registration failures roll back persistence. Cross-window changes
 are observed. Turning the preference off, disabling the plugin, or hot replacing
 the client releases owned registrations and restores the host renderer.
 
-Evidence: the installed DSH `dsh-message-quotes` client registers key `quote` in
-`conversation.chat.text-interaction`; the installed Plugin Manager renders
-`plugins.detail.section` and uses the shared Switch. The sibling Reply Suggestions
-plugin filters its detail section by bundle/row subject in the same way.
+DSH’s `dsh-message-quotes` client registers the `quote` key in
+`conversation.chat.text-interaction`. The Plugin Manager renders
+`plugins.bundle.config` before its source information section.
 
 Verification lives in `test/settings.test.mjs` and `test/toolbar.test.mjs`.
 

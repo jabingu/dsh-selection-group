@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "Selection Toolbar",
-    "description": "选中文字后出现一个悬停框，内含「批注」「引用」「侧边对话」三个动作；前两者不依赖任何上游插件，侧边对话会把选中文字原样填进 dsh-better-sidebar 的侧边对话输入框（不自动发送）。"
+    "description": "选中对话文字，批注、引用或放入侧边对话。",
+    "detail": "locale/detail.zh.md"
   }
 }

@@ -25,6 +25,11 @@ const LANGUAGE_ID = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/
 const ICON_MEDIA_TYPES = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp'])
 const MAX_ICON_BYTES = 256 * 1024
 
+test('DSH compatibility is declared in the top-level engines field', () => {
+  assert.equal(manifest.engines?.dsh, '>=0.2.0-rc.2 <0.2.3-0')
+  assert.equal(manifest.dsh?.engines, undefined)
+})
+
 test('the client half is declared the way the shell resolves it', () => {
   assert.equal(manifest.name, 'dsh-selection-group')
   assert.equal(typeof manifest.exports?.['./client'], 'string', 'exports["./client"] must be a string')
@@ -64,7 +69,7 @@ test('the plugins panel shows an English name with a Chinese description', () =>
   assert.ok(existsSync(join(localeDir, 'en.json')), 'locale/en.json is the anchor the loader requires')
 
   const dictionaries = {}
-  for (const file of readdirSync(localeDir)) {
+  for (const file of readdirSync(localeDir).filter(name => name.endsWith('.json'))) {
     const language = file.replace(/\.json$/, '')
     assert.ok(LANGUAGE_ID.test(language), `locale file "${file}" must be named after a language id`)
     const parsed = JSON.parse(readFileSync(join(localeDir, file), 'utf8'))
@@ -84,6 +89,15 @@ test('the plugins panel shows an English name with a Chinese description', () =>
   assert.match(dictionaries.zh.description, /[\u4e00-\u9fff]/u, 'the Chinese description must be Chinese')
   // package.json description is the English fallback, so it must stay English.
   assert.ok(!/[\u4e00-\u9fff]/u.test(manifest.description), 'manifest.description is the English fallback')
+})
+
+test('Chinese and English locale metadata point to packaged detail documents', () => {
+  assert.ok(manifest.files.includes('locale/detail.*.md'))
+  for (const language of ['zh', 'en']) {
+    const { meta } = JSON.parse(readFileSync(join(root, 'locale', `${language}.json`), 'utf8'))
+    assert.equal(meta.detail, `locale/detail.${language}.md`)
+    assert.ok(readFileSync(join(root, meta.detail), 'utf8').trim(), `${meta.detail} must contain a description`)
+  }
 })
 
 test('the icon is a small manifest-relative image', () => {

@@ -9,7 +9,7 @@ A selection toolbar plugin for [DeepSeek Harness](https://github.com/deepseek-ai
 | Item | Current version / requirement |
 | --- | --- |
 | Plugin | `1.6.5` (package: `dsh-selection-group`) |
-| DSH | `>=0.2.0-rc.2` |
+| DSH | `>=0.2.0-rc.2 <0.2.3-0` |
 | License | [MIT](./LICENSE) |
 
 ## Features

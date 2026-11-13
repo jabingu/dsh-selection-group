@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "Selection Toolbar",
-    "description": "One hover box after selecting text, offering annotate, quote and side chat; the first two need neither upstream plugin installed, and side chat inserts the selection verbatim into a dsh-better-sidebar side chat composer without sending it."
+    "description": "Select conversation text to annotate, quote, or place it in a side chat.",
+    "detail": "locale/detail.en.md"
   }
 }

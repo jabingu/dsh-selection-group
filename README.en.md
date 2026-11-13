@@ -16,7 +16,7 @@ A selection toolbar plugin for [DeepSeek Harness](https://github.com/deepseek-ai
 
 - **Annotate**: add notes to selected text and send them with your next message. Pending annotations appear in a reserved row on the left of the input area.
 - **Quote**: insert the excerpt into the current composer as a native quote when available. Older DSH versions use the plugin’s fallback.
-- **Side chat**: create an empty thread and place the excerpt in its draft. Edit and send it yourself. Requires `dsh-better-sidebar`; the button is absent when unavailable. Excerpts longer than 4000 characters are truncated.
+- To use **Side chat**, first install and enable `dsh-better-sidebar` in DSH. The button creates an empty thread and places the excerpt in its draft for you to edit and send. Excerpts are limited to 4,000 characters.
 - Select across messages within one main conversation, including across copy and status controls.
 - The toolbar appears on pointer release or immediately for keyboard selections. Cancelling dismisses it; streaming rerenders preserve the original excerpt for recovery.
 - Sidebars, file previews, inputs and editable areas do not show the toolbar. Text selected directly inside buttons is excluded.

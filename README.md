@@ -25,7 +25,7 @@
 
 ## 演示
 
-![Selection Toolbar：跨消息选区与批注、引用、侧边对话三个动作](https://github.com/jabingu/dsh-selection-group/releases/download/v1.6.5/selection-toolbar-demo-v1.6.5.png)
+![Selection Toolbar：跨消息选区与批注、引用、侧边对话三个动作](./docs/selection-toolbar-demo-v1.6.5.png)
 
 这张图来自加载真实 v1.6.5 插件客户端的模拟对话页面。
 

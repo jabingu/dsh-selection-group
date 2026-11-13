@@ -25,7 +25,7 @@ Annotation and quote are bundled. Do not also enable independent instances of `@
 
 ## Demo
 
-![Selection Toolbar: a cross-message selection with Annotate, Quote and Side chat actions](https://github.com/jabingu/dsh-selection-group/releases/download/v1.6.5/selection-toolbar-demo-v1.6.5.png)
+![Selection Toolbar: a cross-message selection with Annotate, Quote and Side chat actions](./docs/selection-toolbar-demo-v1.6.5.png)
 
 Captured from a simulated conversation page running the actual v1.6.5 plugin client.
 

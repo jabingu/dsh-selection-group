@@ -345,4 +345,4 @@
 [1.3.5]: https://github.com/jabingu/dsh-selection-group/commit/f2e93e8
 [1.3.4]: https://github.com/jabingu/dsh-selection-group/commit/a3fcc86
 [1.3.3]: https://github.com/jabingu/dsh-selection-group/commit/ca24650
-[1.3.8]: https://github.com/jabingu/dsh-selection-group/releases/tag/v1.3.8
+[1.3.8]: https://github.com/jabingu/dsh-selection-group/commit/d861a95584bc44e66d14526d7a7d345f3b23c149

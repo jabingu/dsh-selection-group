@@ -3460,7 +3460,7 @@ var module = { exports: {} };
 		 */
 
 		//#region constants
-		const CLIENT_VERSION = "1.6.5";
+		const CLIENT_VERSION = "1.6.6";
 		const STYLE_ID = "dsh-selection-group-style";
 		const MARKER_ATTR = "data-dsh-selection-group";
 		const SELECTION_API_KEY = "__DSH_SELECTION_GROUP_SELECTION__";

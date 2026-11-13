@@ -8,14 +8,14 @@ A selection toolbar plugin for [DeepSeek Harness](https://github.com/deepseek-ai
 
 | Item | Current version / requirement |
 | --- | --- |
-| Plugin | `1.6.5` (package: `dsh-selection-group`) |
+| Plugin | `1.6.6` (package: `dsh-selection-group`) |
 | DSH | `>=0.2.0-rc.2 <0.2.3-0` |
 | License | [MIT](./LICENSE) |
 
 ## Features
 
 - **Annotate**: add notes to selected text and send them with your next message. Pending annotations appear in a reserved row on the left of the input area.
-- **Quote**: insert the excerpt into the current composer, using native references with a text fallback.
+- **Quote**: insert the excerpt into the current composer as a native quote when available. Older DSH versions use the plugin’s fallback.
 - **Side chat**: create an empty thread and place the excerpt in its draft. Edit and send it yourself. Requires `dsh-better-sidebar`; the button is absent when unavailable. Excerpts longer than 4000 characters are truncated.
 - Select across messages within one main conversation, including across copy and status controls.
 - The toolbar appears on pointer release or immediately for keyboard selections. Cancelling dismisses it; streaming rerenders preserve the original excerpt for recovery.
@@ -89,7 +89,7 @@ npm run build
 npm test
 ```
 
-All **130 automated tests pass**, covering quote preferences and restoration, cross-message selections, initial annotation layout and cleanup, cancellation and streaming recovery, side-chat ownership and plugin lifecycle. Annotation layout was also checked in Chrome fixtures matching the installed DSH sticky-composer structure, including normal and narrow windows and queues. The latest changes still require verification in the actual DSH app.
+The **138 automated tests** cover quote preferences, cross-message selections, annotation layout, cancellation and streaming recovery, side-chat ownership, and plugin lifecycle. Chrome fixtures also cover annotation layout in normal and narrow windows and with a message queue.
 
 `client.js` is generated from `src/`, `vendor/` and `patches/`; do not edit it by hand. `npm test` checks bundle consistency before running tests.
 
